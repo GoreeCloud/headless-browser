@@ -53,6 +53,10 @@ jobs:
         run: cargo test --locked -p obscura-ssrf
       - name: Typecheck all default-feature CLI binaries without releasing
         run: cargo check --locked -p obscura-cli --bins --no-default-features
+      - name: Exercise targeted CDP malformed-Host rejection test
+        run: |
+          cargo test --locked -p obscura-cdp --lib rejects_host_header_userinfo_and_url_components -- --nocapture | tee "$RUNNER_TEMP/cdp-host-authority-test.log"
+          grep -E "test result: ok\. 1 passed; 0 failed" "$RUNNER_TEMP/cdp-host-authority-test.log"
       - name: Build local-only unpublished CLI executables
         run: cargo build --locked -p obscura-cli --bins --no-default-features
       - name: Verify both commands and SSRF on a disposable owned-loopback fixture
