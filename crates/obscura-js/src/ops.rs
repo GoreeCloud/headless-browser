@@ -226,6 +226,35 @@ mod goreecloud_interception_queue_tests {
     }
 }
 
+#[cfg(all(test, feature = "render"))]
+mod goreecloud_render_queue_tests {
+    use super::*;
+
+    #[test]
+    fn render_result_queue_refuses_excess_and_recovers() {
+        let (sender, mut receiver) =
+            tokio::sync::mpsc::channel::<RenderResourceLoad>(MAX_PENDING_RENDER_RESOURCE_RESULTS);
+        let result = |index: usize| RenderResourceLoad {
+            generation: 1,
+            url: format!("about:blank#fixture-{index}"),
+            profile: None,
+            is_font: false,
+            response: None,
+        };
+        for index in 0..MAX_PENDING_RENDER_RESOURCE_RESULTS {
+            sender.try_send(result(index)).expect("buffer has room");
+        }
+        assert!(matches!(
+            sender.try_send(result(MAX_PENDING_RENDER_RESOURCE_RESULTS)),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+        ), "a stalled renderer may not retain unlimited completed resource results");
+        let first = receiver.try_recv().expect("one result to drain");
+        assert_eq!(first.url, "about:blank#fixture-0");
+        sender.try_send(result(1234)).expect("draining releases one result slot");
+        assert_eq!(receiver.len(), MAX_PENDING_RENDER_RESOURCE_RESULTS);
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StoredNetworkResponseBody {
     pub body: String,
@@ -731,9 +760,9 @@ pub struct ObscuraState {
     /// promise wait, so a script polling geometry sees them. `document_generation`
     /// in each result fences a previous document's late answer.
     #[cfg(feature = "render")]
-    pub render_resource_tx: tokio::sync::mpsc::UnboundedSender<RenderResourceLoad>,
+    pub render_resource_tx: tokio::sync::mpsc::Sender<RenderResourceLoad>,
     #[cfg(feature = "render")]
-    pub render_resource_rx: tokio::sync::mpsc::UnboundedReceiver<RenderResourceLoad>,
+    pub render_resource_rx: tokio::sync::mpsc::Receiver<RenderResourceLoad>,
     /// Resources currently loading through the page transport, so repeated
     /// misses never duplicate a request.
     #[cfg(feature = "render")]
@@ -897,7 +926,8 @@ impl ObscuraState {
 
     pub fn new() -> Self {
         #[cfg(feature = "render")]
-        let (render_resource_tx, render_resource_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (render_resource_tx, render_resource_rx) =
+            tokio::sync::mpsc::channel(MAX_PENDING_RENDER_RESOURCE_RESULTS);
         ObscuraState {
             dom: None,
             form_cache_buffer: None,
@@ -1985,6 +2015,13 @@ pub(crate) fn queue_retained_style_mutation(
 /// of the document however many scans or layout misses queue them.
 #[cfg(feature = "render")]
 pub const RENDER_RESOURCE_CONCURRENCY: usize = 16;
+
+/// Completed render-resource replies can carry large image/font bodies. Keep
+/// the result buffer no bigger than the existing 16 in-flight fetches; the
+/// sending task waits for the renderer to drain it instead of retaining every
+/// completed response while a page stalls.
+#[cfg(feature = "render")]
+pub const MAX_PENDING_RENDER_RESOURCE_RESULTS: usize = RENDER_RESOURCE_CONCURRENCY;
 
 /// One finished page-transport load for the renderer cache.
 #[cfg(feature = "render")]
