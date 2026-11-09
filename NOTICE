@@ -1,0 +1,14 @@
+GoreeCloud Headless Browser
+Copyright (c) 2026 GoreeCloud contributors for their own modifications.
+
+This is a rebranded and modified distribution of the Obscura headless browser
+by the original Obscura authors and contributors:
+https://github.com/h4ckf0r0day/obscura
+
+Imported from the upstream main branch at:
+59276a3620aed0320879f60b9f049010d568088c
+
+The original Obscura software is provided under the Apache License, Version 2.0.
+See LICENSE and the retained individual source and vendor license notices.
+No transfer of upstream authorship or trademark rights is asserted.
+GoreeCloud is not affiliated with or endorsed by the upstream project.

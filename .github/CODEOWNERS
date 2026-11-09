@@ -1,0 +1,6 @@
+# GoreeCloud-maintained rebranded import.
+* @GoreeCloud
+
+/.github/ @GoreeCloud
+/scripts/ @GoreeCloud
+/deny.toml @GoreeCloud
