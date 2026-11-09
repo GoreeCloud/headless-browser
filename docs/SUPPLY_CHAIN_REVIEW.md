@@ -10,7 +10,7 @@
 | Local workspace packages and vendored crates | 13 |
 | **Total** | **490** |
 
-The local group consists of ten Obscura workspace crates and three vendored crates: **taffy**, **cosmic-text**, and **wreq-util**. Their Cargo manifest license expressions are recorded by the offline inventory tool, **not** independently legally verified. The 477 registry records have checksums in Cargo.lock; that does **not** prove downloaded source integrity or provide license text. The tracked imported assets directory includes 18 files, including inherited sponsor graphics with separate trademark or copyright questions. Do not assume they are cleared for GoreeCloud redistribution.
+The local group consists of ten Obscura workspace crates and three vendored crates: **taffy**, **cosmic-text**, and **wreq-util**. Their Cargo manifest license expressions are recorded by the offline inventory tool, **not** independently legally verified. The 477 registry records have checksums in Cargo.lock; that does **not** prove downloaded source integrity or provide license text. The tracked imported assets directory includes 18 files, including inherited sponsor graphics with separate trademark or copyright questions. Do not assume they are cleared for GoreeCloud redistribution. The byte-for-byte graphic inventory and individual unapproved-rights statuses are documented in [IMPORTED_ASSET_RIGHTS.md](IMPORTED_ASSET_RIGHTS.md).
 
 ## Repeatable local-only review
 
