@@ -51,7 +51,10 @@ def validate_ready(record: object, expected_pid: int) -> int:
     return port
 
 
-def serve_command(binary: Path, ready: Path, *, allow_private_network: bool = False) -> list[str]:
+def serve_command(
+    binary: Path, ready: Path, *, allow_private_network: bool = False,
+    max_connections: int | None = None,
+) -> list[str]:
     command = [
         str(binary), "serve", "--host", "127.0.0.1",
         "--port", "0", "--workers", "1", "--ready-file", str(ready),
@@ -61,6 +64,10 @@ def serve_command(binary: Path, ready: Path, *, allow_private_network: bool = Fa
         # Only the owned HTML fixture test opts in. The default smoke never
         # relaxes the private-network SSRF policy.
         command.append("--allow-private-network")
+    if max_connections is not None:
+        if not isinstance(max_connections, int) or isinstance(max_connections, bool) or max_connections < 1:
+            raise ValueError("max_connections must be a positive integer")
+        command.extend(("--max-connections", str(max_connections)))
     return command
 
 
@@ -70,6 +77,7 @@ def disposable_cdp_server(
     token: str | None = None,
     *,
     allow_private_network: bool = False,
+    max_connections: int | None = None,
 ) -> Iterator[int]:
     binary = ROOT / "target/debug" / name
     if not binary.is_file():
@@ -78,7 +86,11 @@ def disposable_cdp_server(
     with tempfile.TemporaryDirectory(prefix="goreecloud-owned-cdp-") as directory:
         ready = Path(directory) / "ready.json"
         proc = subprocess.Popen(
-            serve_command(binary, ready, allow_private_network=allow_private_network),
+            serve_command(
+                binary, ready,
+                allow_private_network=allow_private_network,
+                max_connections=max_connections,
+            ),
             cwd=ROOT,
             env=sanitized_env(token),
             stdin=subprocess.DEVNULL,

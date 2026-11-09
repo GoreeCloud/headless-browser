@@ -36,6 +36,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **License:** [Apache License 2.0](LICENSE); original authorship, third-party vendor licenses, and [attribution](NOTICE) are retained
 - **Original upstream README:** [UPSTREAM_README.md](UPSTREAM_README.md)
 - **Integration record:** [docs/IMPORT_PROVENANCE.md](docs/IMPORT_PROVENANCE.md)
+- **CDP admission acceptance:** [docs/CDP_CONNECTION_ADMISSION.md](docs/CDP_CONNECTION_ADMISSION.md) (one-slot refusal, incumbent liveness and recovery; not production DoS acceptance)
 - **Dependency audit status:** [docs/SUPPLY_CHAIN_REVIEW.md](docs/SUPPLY_CHAIN_REVIEW.md) (locked inventory only; licensing/SBOM review open)
 - **Imported graphics rights:** [docs/IMPORTED_ASSET_RIGHTS.md](docs/IMPORTED_ASSET_RIGHTS.md) (upstream provenance verified; sponsor/brand use unapproved)
 - **Upstream feature documentation:** [docs/README.md](docs/README.md)
