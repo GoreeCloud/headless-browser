@@ -43,6 +43,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **Interception queue policy:** [docs/INTERCEPTION_BACKPRESSURE.md](docs/INTERCEPTION_BACKPRESSURE.md) (bounded Fetch/XHR/document intercepts; fail-closed on saturation or consumer loss)
 - **Interception decision deadline:** [docs/INTERCEPTION_DECISION_DEADLINE.md](docs/INTERCEPTION_DECISION_DEADLINE.md) (60-second shared fail-closed wait for unanswered Fetch/XHR/document decisions)
 - **Paused Fetch decisions:** [docs/CDP_PAUSED_INTERCEPTIONS.md](docs/CDP_PAUSED_INTERCEPTIONS.md) (128 outstanding decisions, duplicate-ID refusal and canceled-request cleanup)
+- **Fetch.enable consumer gate:** [docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md](docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md) (do not enable policy when the receiver is unavailable or closed)
 - **Dependency audit status:** [docs/SUPPLY_CHAIN_REVIEW.md](docs/SUPPLY_CHAIN_REVIEW.md) (locked inventory only; licensing/SBOM review open)
 - **Imported graphics rights:** [docs/IMPORTED_ASSET_RIGHTS.md](docs/IMPORTED_ASSET_RIGHTS.md) (upstream provenance verified; sponsor/brand use unapproved)
 - **GoreeShield log minimization:** [docs/LOG_DATA_MINIMIZATION.md](docs/LOG_DATA_MINIMIZATION.md) (targeted URL, request-ID and cookie-path redaction; full log audit open)

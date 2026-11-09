@@ -61,6 +61,13 @@ pub async fn handle(
 ) -> Result<Value, String> {
     match method {
         "enable" => {
+            // Do not acknowledge interception while no consumer can receive
+            // paused requests. Otherwise a CDP client may believe its network
+            // policy is active while document/JS requests bypass it.
+            let tx = ctx.intercept_tx.as_ref()
+                .filter(|sender| !sender.is_closed())
+                .cloned()
+                .ok_or("Fetch interception consumer unavailable")?;
             let patterns = params
                 .get("patterns")
                 .and_then(|v| v.as_array())
@@ -77,12 +84,9 @@ pub async fn handle(
 
             ctx.fetch_intercept.enabled = true;
             ctx.fetch_intercept.patterns = patterns.clone();
-            let tx_clone = ctx.intercept_tx.clone();
             if let Some(page) = ctx.get_session_page_mut(session_id) {
                 page.intercept_block_patterns = patterns.clone();
-                if let Some(tx) = tx_clone {
-                    page.set_intercept_tx(tx);
-                }
+                page.set_intercept_tx(tx);
                 page.enable_intercept(true);
             }
 
@@ -232,6 +236,51 @@ mod tests {
     use crate::dispatch::CdpContext;
     use serde_json::json;
     use std::collections::HashMap;
+
+    #[tokio::test]
+    async fn fetch_enable_requires_live_interception_consumer() {
+        let mut ctx = CdpContext::new();
+        let page_id = ctx.create_page();
+        let session = Some("owned-session".to_string());
+        ctx.sessions.insert(session.clone().unwrap(), page_id.clone());
+        let patterns = json!({"patterns": [{"urlPattern": "https://example.invalid/*"}]});
+
+        let missing = handle("enable", &patterns, &mut ctx, &session).await;
+        assert!(missing.is_err(), "missing consumer must not acknowledge Fetch.enable");
+        assert_eq!(missing.unwrap_err(), "Fetch interception consumer unavailable");
+        assert!(!ctx.fetch_intercept.enabled);
+        assert!(ctx.fetch_intercept.patterns.is_empty());
+        assert!(!ctx.get_page_mut(&page_id).unwrap().intercept_enabled);
+
+        let (sender, receiver) =
+            tokio::sync::mpsc::channel::<obscura_js::ops::InterceptedRequest>(1);
+        drop(receiver);
+        ctx.intercept_tx = Some(sender);
+        let closed = handle("enable", &patterns, &mut ctx, &session).await;
+        assert!(closed.is_err(), "closed consumer must not acknowledge Fetch.enable");
+        assert!(!ctx.fetch_intercept.enabled);
+        assert!(ctx.fetch_intercept.patterns.is_empty());
+        assert!(!ctx.get_page_mut(&page_id).unwrap().intercept_enabled);
+    }
+
+    #[tokio::test]
+    async fn fetch_enable_installs_live_consumer_before_enabling_page() {
+        let mut ctx = CdpContext::new();
+        let page_id = ctx.create_page();
+        let session = Some("owned-session".to_string());
+        ctx.sessions.insert(session.clone().unwrap(), page_id.clone());
+        let (sender, _receiver) =
+            tokio::sync::mpsc::channel::<obscura_js::ops::InterceptedRequest>(1);
+        ctx.intercept_tx = Some(sender);
+        let answer = handle("enable", &json!({"patterns": [{"urlPattern": "https://example.invalid/*"}]}),
+            &mut ctx, &session).await.expect("a live receiver permits Fetch.enable");
+        assert_eq!(answer, json!({}));
+        assert!(ctx.fetch_intercept.enabled);
+        assert_eq!(ctx.fetch_intercept.patterns, vec!["https://example.invalid/*".to_string()]);
+        let page = ctx.get_page_mut(&page_id).unwrap();
+        assert!(page.intercept_enabled);
+        assert_eq!(page.intercept_block_patterns, vec!["https://example.invalid/*".to_string()]);
+    }
 
     fn pause(ctx: &mut CdpContext, id: &str) -> tokio::sync::oneshot::Receiver<FetchResolution> {
         let (tx, rx) = tokio::sync::oneshot::channel();
