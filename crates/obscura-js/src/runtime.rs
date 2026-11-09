@@ -1357,7 +1357,7 @@ impl ObscuraJsRuntime {
             // A fresh channel: a load of the old document that is still
             // finishing (abort is not a join) delivers into a dropped
             // receiver, never into this document's results.
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let (tx, rx) = tokio::sync::mpsc::channel(crate::ops::MAX_PENDING_RENDER_RESOURCE_RESULTS);
             gs.render_resource_tx = tx;
             gs.render_resource_rx = rx;
             gs.stylesheet_cache = obscura_render::StylesheetCache::default();
@@ -2279,7 +2279,7 @@ impl ObscuraJsRuntime {
         // A fresh channel fences results that are still on their way (abort
         // is not a join) even when this runtime survives, as after a failed
         // navigation.
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(crate::ops::MAX_PENDING_RENDER_RESOURCE_RESULTS);
         state.render_resource_tx = tx;
         state.render_resource_rx = rx;
     }
@@ -2475,7 +2475,9 @@ impl ObscuraJsRuntime {
                     ok = load.response.is_some(),
                     "render resource load finished (URL redacted)"
                 );
-                if tx.send(load).is_err() {
+                // A full queue must backpressure the 16-way loader rather
+                // than retain arbitrary completed image/font response bodies.
+                if tx.send(load).await.is_err() {
                     break;
                 }
                 notify.notify_waiters();
@@ -4106,7 +4108,7 @@ impl ObscuraJsRuntime {
             state.render_resource_in_flight.clear();
             state.render_resource_backlog.clear();
             state.render_resource_events.clear();
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let (tx, rx) = tokio::sync::mpsc::channel(crate::ops::MAX_PENDING_RENDER_RESOURCE_RESULTS);
             state.render_resource_tx = tx;
             state.render_resource_rx = rx;
             state.stylesheet_cache = obscura_render::StylesheetCache::default();
@@ -5754,8 +5756,8 @@ mod tests {
             br##"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"></svg>"##
                 .as_slice(),
         );
-        let answer = |generation, tx: &tokio::sync::mpsc::UnboundedSender<_>| {
-            tx.send(crate::ops::RenderResourceLoad {
+        let answer = |generation, tx: &tokio::sync::mpsc::Sender<_>| {
+            tx.try_send(crate::ops::RenderResourceLoad {
                 generation,
                 url: url.clone(),
                 profile: None,
