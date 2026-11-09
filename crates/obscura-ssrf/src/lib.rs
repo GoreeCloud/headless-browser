@@ -67,11 +67,17 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
                 || o[0] >= 240
         }
         IpAddr::V6(v6) => {
+            // Deprecated site-local addresses (fec0::/10) remain reachable
+            // in some legacy local deployments and are not covered by the
+            // standard library's unique-local or link-local classifications.
+            // Deny them explicitly to avoid internal network SSRF bypasses.
+            let s = v6.segments();
             if v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_unique_local()
                 || v6.is_unicast_link_local()
                 || v6.is_multicast()
+                || (s[0] & 0xffc0) == 0xfec0
             {
                 return true;
             }
@@ -82,7 +88,6 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
                 return is_forbidden_ip(IpAddr::V4(v4));
             }
 
-            let s = v6.segments();
             // IPv4/IPv6 translation prefix (RFC 6052). Only /96 has a fixed
             // embedded-address position; the local-use /48 is therefore
             // blocked outright below.
@@ -134,6 +139,93 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
                 || (s[0] == 0x64 && s[1] == 0xff9b && s[2] == 1)
                 || (s[0] == 0x2001 && s[1] == 0x0db8)
                 || (s[0] == 0x3fff && s[1] & 0xf000 == 0)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_forbidden_ip;
+    use std::net::IpAddr;
+
+    fn forbidden(address: &str) -> bool {
+        is_forbidden_ip(address.parse::<IpAddr>().expect("valid test address"))
+    }
+
+    #[test]
+    fn blocks_common_ipv4_internal_and_cloud_metadata_ranges() {
+        for address in [
+            "0.0.0.0",
+            "0.127.0.1",
+            "10.0.0.1",
+            "100.100.100.200",
+            "127.0.0.1",
+            "169.254.169.254",
+            "172.16.0.1",
+            "192.168.1.1",
+            "192.0.0.1",
+            "192.88.99.1",
+            "198.18.0.1",
+            "198.19.255.255",
+            "203.0.113.50",
+            "224.0.0.1",
+            "240.0.0.1",
+            "255.255.255.255",
+        ] {
+            assert!(forbidden(address), "SSRF address should be blocked: {address}");
+        }
+    }
+
+    #[test]
+    fn blocks_ipv6_internal_special_use_and_deprecated_site_local_ranges() {
+        for address in [
+            "::",
+            "::1",
+            "fc00::1",
+            "fd00::1",
+            "fe80::1",
+            "fec0::1",
+            "fedf::1",
+            "feff::1",
+            "ff02::1",
+            "2001:db8::1",
+            "100::1",
+            "64:ff9b:1::1",
+            "3fff::1",
+        ] {
+            assert!(forbidden(address), "SSRF address should be blocked: {address}");
+        }
+    }
+
+    #[test]
+    fn blocks_encapsulated_private_ipv4_addresses() {
+        for address in [
+            "::ffff:127.0.0.1",
+            "::ffff:169.254.169.254",
+            "::127.0.0.1",
+            "64:ff9b::7f00:1",
+            "2002:7f00:1::1",
+            "2001:0:7f00:1::1",
+        ] {
+            assert!(forbidden(address), "embedded private IPv4 should be blocked: {address}");
+        }
+    }
+
+    #[test]
+    fn permits_only_known_public_address_examples() {
+        for address in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "9.9.9.9",
+            "192.0.0.9",
+            "192.0.0.10",
+            "2001:4860:4860::8888",
+            "2606:4700:4700::1111",
+            "::ffff:8.8.8.8",
+            "64:ff9b::808:808",
+            "2002:808:808::1",
+        ] {
+            assert!(!forbidden(address), "routable example should be allowed: {address}");
         }
     }
 }
