@@ -128,6 +128,7 @@ def handshake(
     token: str | None = None,
     origin: str | None = None,
     authority: str | None = None,
+    ci_note: str | None = None,
 ) -> Iterator[tuple[int, BufferedConnection]]:
     with socket.create_connection(("127.0.0.1", port), timeout=5) as stream:
         stream.settimeout(8)
@@ -140,6 +141,10 @@ def handshake(
             f"Sec-WebSocket-Key: {key.decode('ascii')}",
             "Sec-WebSocket-Version: 13",
         ]
+        if ci_note is not None:
+            if any(c in ci_note for c in "\r\n"):
+                raise ValueError("CI WebSocket note must not contain line breaks")
+            header_lines.append(f"X-GoreeCloud-Test-Note: {ci_note}")
         if token is not None:
             header_lines.append(f"Authorization: Bearer {token}")
         if origin is not None:

@@ -46,3 +46,7 @@ An inert, fixed HTML document is served solely from a disposable 127.0.0.1 port 
 ## Structured CDP command and response filtering
 
 WebSocket shutdown is recognized only when the parsed CDP request method is exactly `Browser.close`, not when arbitrary JSON params contain that text. Internal `__init` connection envelopes are filtered only when they are top-level control records without a CDP response ID; nested user-result fields remain deliverable. Source regressions and real owned-loopback WebSocket/Runtime tests guard against accidental CDP disconnects and swallowed replies. This is a targeted protocol integrity improvement, not a full WebSocket fuzz test or an authorization policy.
+
+## Exact CDP HTTP discovery request-target routing
+
+The local CDP accept loop classifies `/json`, `/json/list`, `/json/version`, and `/json/protocol` from the parsed HTTP request **target**, not by searching arbitrary header text. This prevents WebSocket request headers or lookalike paths from being misinterpreted as discovery traffic. CI validates exact path and optional query behavior, and verifies an owned loopback WebSocket still upgrades and answers CDP commands when an unrelated header contains `/json/version`. Existing Host/Origin/bearer controls remain in force. This is route-integrity hardening, not a complete HTTP parser or request-smuggling assessment.
