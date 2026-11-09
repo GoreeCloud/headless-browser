@@ -30,3 +30,7 @@ Nonpublishing CI also exercises the actual WebSocket upgrade and two side-effect
 ## CDP duplicate-sensitive-header rejection
 
 The inbound CDP HTTP and WebSocket gateway rejects repeated Host fields (including mixed-case duplicates) instead of choosing one; any Origin field is refused, and multiple Authorization fields are rejected even with a valid bearer. This prevents disagreement between parsers or intermediaries about which control-plane authority or credential is effective. Targeted Rust and actual owned-loopback HTTP checks are run in nonpublishing CI. This does not replace TLS, remote client identity, network segregation or broader request-smuggling assessment.
+
+## CDP fail-closed startup checks
+
+The development CI runner tests four pre-bind failures: an unauthenticated nonloopback address (using nonlocal documentation-only 192.0.2.123, not a wildcard listener), a bearer token shorter than 32 bytes, forwarded nonloopback authority without authentication, and incomplete forwarded authority configuration. These checks must exit promptly with the expected guard message and **must not publish a ready file**. They do not authorize public CDP exposure; a long token is not proof of adequate production authentication, transport encryption, network isolation or credential governance.
