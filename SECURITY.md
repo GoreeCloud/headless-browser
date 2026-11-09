@@ -66,3 +66,7 @@ The render-enabled local-only CDP fixture prints a raster PDF from an inert, exp
 ## Reliable CDP Browser.close acknowledgment
 
 The server's dedicated WebSocket sender previously risked losing the `Browser.close` success response because it was aborted immediately after the inbound loop ended. A one-shot final-response path now sends the identity-preserving CDP reply, flushes and closes the socket before returning, with a **two-second timeout** to prevent shutdown deadlock. Owned-loopback CI verifies request ID/session ID preservation, acknowledgment-before-close and listener usability after reconnect. This addresses a narrow protocol lifecycle fault; it is not a guarantee of all queued messages, pending tasks or on-disk state during abrupt termination.
+
+## CDP inbound command backpressure
+
+The WebSocket-to-V8 command channel now has a per-client **256-message** capacity and an independent **16 MiB queued UTF-8 byte budget** using Tokio semaphore permits retained by each message until it is processed or dropped. A client exceeding either limit is disconnected rather than growing a queue indefinitely or generating an unbounded error flood. Rust unit tests verify permit release and queue overflow; owned-loopback CDP CI protects expected normal behavior. These limits do **not** constrain outbound events, JS interception queues, V8/DOM memory, bandwidth, active processing or aggregate process RSS, and they require further Wardveil stress testing before any public CDP exposure or release.
