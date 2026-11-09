@@ -2596,17 +2596,16 @@ async fn handle_connection_ws(
                 _ = outgoing_notify.notified() => {
                     warn!("CDP outgoing response queue exhausted; closing client");
                     let _ = tokio::time::timeout(
-                    std::time::Duration::from_secs(2), ws_sender.close(),
-                ).await;
+                        std::time::Duration::from_secs(2), ws_sender.close(),
+                    ).await;
                     break;
                 }
-                biased;
                 closing = &mut close_reply_rx => {
                     if let Ok(response) = closing {
                         if ws_sender.send(Message::Text(response.into())).await.is_ok() {
                             let _ = tokio::time::timeout(
-                    std::time::Duration::from_secs(2), ws_sender.close(),
-                ).await;
+                                std::time::Duration::from_secs(2), ws_sender.close(),
+                            ).await;
                         }
                     }
                     break;
