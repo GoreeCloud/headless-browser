@@ -17,6 +17,11 @@ INITIAL_SHA = "accfeb99a27efdc071cb0c8befbb1902f2375bb4"
 GOREECLOUD_REPOSITORY = "https://github.com/GoreeCloud/headless-browser"
 VALIDATION_WORKFLOW = ".github/workflows/import-validation.yml"
 CHECKOUT_PIN = "d23441a48e516b6c34aea4fa41551a30e30af803"
+RUST_TOOLCHAIN_PIN = "4360b52568e2003a75bf9bc1d59f33a8e3fc893c"
+ALLOWED_ACTION_REFS = {
+    "actions/checkout@" + CHECKOUT_PIN,
+    "dtolnay/rust-toolchain@" + RUST_TOOLCHAIN_PIN,
+}
 
 
 def require(condition: bool, detail: str) -> None:
@@ -87,22 +92,38 @@ def verify_metadata(root: Path) -> None:
 
 
 def verify_workflow_text(contents: str) -> None:
-    # Intentionally fail closed if someone adds unreviewed publishing capabilities.
+    # This is a narrow, fail-closed policy for the *reviewed* one-workflow tree.
+    # It is not a complete YAML parser or security scanner.
     require(
         bool(re.search(r"(?m)^permissions:\s*\n\s+contents:\s*read\s*$", contents)),
         "CI requires explicit contents: read permissions",
     )
-    require(
-        bool(re.search(r"(?m)^\s*(?:-\s*)?uses:\s*actions/checkout@" + CHECKOUT_PIN + r"\s*(?:#.*)?$", contents)),
-        "CI checkout is not pinned to the reviewed commit",
+
+    action_refs = re.findall(
+        r"(?m)^\s*(?:-\s*)?uses:\s*([^\s#]+)",
+        contents,
     )
+    checkout_ref = "actions/checkout@" + CHECKOUT_PIN
+    require(checkout_ref in action_refs, "CI checkout is not pinned to the reviewed commit")
+    unknown = [ref for ref in action_refs if ref not in ALLOWED_ACTION_REFS]
+    require(not unknown, f"CI contains unreviewed or unpinned actions: {unknown}")
+
+    # Every checked-out source tree must drop its token. The count guard is
+    # intentionally conservative if extra checkout steps are introduced.
+    persisted = re.findall(
+        r"(?m)^\s*persist-credentials:\s*(\S+)",
+        contents,
+    )
+    checkouts = action_refs.count(checkout_ref)
     require(
-        bool(re.search(r"(?m)^\s*persist-credentials:\s*false\s*$", contents)),
-        "CI must not persist the checkout token",
+        len(persisted) == checkouts and all(item == "false" for item in persisted),
+        "every checkout must set persist-credentials: false",
     )
     for unsafe in (
         r"(?m)^\s*pull_request_target\s*:",
-        r"(?m)^\s*(?:contents|packages|id-token|actions)\s*:\s*write\s*$",
+        r"(?m)^\s*workflow_run\s*:",
+        r"(?m)^\s*[a-zA-Z][a-zA-Z0-9_-]*\s*:\s*write\s*$",
+        r"(?m)^\s*permissions:\s*write-all\s*$",
         r"(?m)^\s*(?:publish|deploy|release)\s*:",
         r"\bsecrets\s*\.",
     ):
