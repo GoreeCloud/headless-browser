@@ -20,5 +20,30 @@ jobs:
           fetch-depth: 0 # Verify both imported ancestor histories without executing source
       - name: Self-test provenance and workflow gate
         run: python3 -m unittest discover -s tests/goreecloud -p "test_*.py" -v
+      - name: Check Cargo binary registration (manifest only, no build scripts)
+        run: python3 scripts/verify_cargo_targets.py
+      - name: Test dependency-free CLI identity code (no upstream build scripts)
+        run: |
+          rustc --edition=2021 --test crates/obscura-cli/src/brand.rs -o "$RUNNER_TEMP/goreecloud-brand-tests"
+          "$RUNNER_TEMP/goreecloud-brand-tests"
       - name: Validate attributed import without executing upstream code
         run: python3 scripts/verify_goreecloud_import.py
+
+  cli-typecheck:
+    # A disposable hosted runner only; the provenance job must first pass.
+    needs: provenance-and-branding
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout reviewed source without persisting credentials
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Select pinned stable Rust setup action
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - name: Check SSRF library with inherited tests
+        run: cargo test --locked -p obscura-ssrf
+      - name: Typecheck all default-feature CLI binaries without releasing
+        run: cargo check --locked -p obscura-cli --bins --no-default-features

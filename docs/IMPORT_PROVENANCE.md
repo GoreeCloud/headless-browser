@@ -20,7 +20,7 @@ The target branch is an unrelated-history **merge** of the existing GoreeCloud `
 
 1. Product-facing README, notice, security caveats, and this import record.
 2. Workspace repository metadata directed to GoreeCloud.
-3. `goreecloud-headless-browser` binary added without removing the original `obscura` and `obscura-worker` entry points; CLI identity and help use the GoreeCloud product name.
+3. `goreecloud-headless-browser` binary added without removing the original `obscura` and `obscura-worker` entry points; The branded executable identifies itself as GoreeCloud Headless Browser while the original `obscura` executable retains its upstream name in help and startup banners.
 4. Docker build and entry point target the new binary name, without executing or publishing a container as part of the import.
 5. GitHub CODEOWNERS and issue reporting no longer direct GoreeCloud issues to upstream maintainers.
 6. Upstream `.github/workflows/ci.yml`, `docker.yml`, and `release.yml` removed from the active tree to prevent unreviewed build, publish, or release actions. Their prior contents remain in imported Git history. A minimal read-only import-verification workflow replaces them.
@@ -29,7 +29,7 @@ Core Rust crate names, internal APIs, protocol identifiers, historical documents
 
 ## Trust and validation scope
 
-Importing source does not imply that code was built, installed, audited exhaustively, or run against untrusted sites. The inherited build scripts include V8 snapshot generation, and the Rust workspace includes vendored dependencies; they are **not** executed merely to validate this import. A deterministic static verification checks product metadata, attribution, source presence, and disabled publishing workflows. Rust compile tests, end-to-end CDP tests, container tests, dependency/legal audit, privacy acceptance, and platform-specific tests are future release gates.
+Importing source does not imply that code was built, installed, audited exhaustively, or run against untrusted sites. The inherited build scripts include V8 snapshot generation, and the Rust workspace includes vendored dependencies; they are **not** executed merely to validate this import. A deterministic static verification checks product metadata, attribution, source presence, and disabled publishing workflows. A bounded, nonpublishing CI CLI typecheck and SSRF unit tests are scheduled only after static/provenance gates pass on an isolated hosted runner. A successful typecheck does not establish executable builds or runtime behavior. End-to-end CDP, container, dependency/legal audit, privacy acceptance, complete security review and platform-specific tests remain future release gates.
 
 ## Upstream synchronization strategy
 
