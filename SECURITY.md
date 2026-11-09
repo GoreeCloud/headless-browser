@@ -26,3 +26,7 @@ Nonpublishing CI launches single-worker development binaries bound only to 127.0
 ## WebSocket CDP protocol smoke
 
 Nonpublishing CI also exercises the actual WebSocket upgrade and two side-effect-free browser metadata methods (Browser.getVersion and Target.getTargets), using a minimal stdlib RFC6455 client with masked outbound frames and bounded response sizes. It verifies refusal of browser Origins and missing/incorrect bearer tokens while the CDP server stays bound to 127.0.0.1. These are narrow protocol checks, not full WebSocket fuzzing, multi-client isolation, production authentication, navigation safety or screenshot/render acceptance.
+
+## CDP about:blank and local-file guard
+
+A disposable CI WebSocket session checks that Target.createTarget rejects a deliberately nonexistent file:// URL by default, opens and attaches to about:blank, runs only the harmless expression 6 * 7 using Runtime.evaluate, and closes the target without leaving an active target listing. No external navigation, real filesystem contents, user data, or arbitrary site scripts are involved. Passing does not prove comprehensive local-file isolation, untrusted JavaScript sandboxing, cross-origin protections, remote egress controls or production CDP readiness.

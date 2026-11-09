@@ -91,5 +91,62 @@ class WebSocketWireTests(unittest.TestCase):
             right.close()
 
 
+    def test_request_can_send_session_params_over_masked_wire(self):
+        left, right = socket.socketpair()
+        try:
+            response = json.dumps({"id": 91, "result": {"result": {"type": "number", "value": 42}}}).encode()
+            right.sendall(bytes([0x81, len(response)]) + response)
+            peer = ws.BufferedConnection(left)
+            answer = peer.request(
+                91, "Runtime.evaluate",
+                params={"expression": "6 * 7", "returnByValue": True},
+                session_id="owned-page",
+            )
+            self.assertEqual(answer["result"]["value"], 42)
+            frame = right.recv(4096)
+            self.assertEqual(frame[0], 0x81)
+            self.assertTrue(frame[1] & 0x80)
+            length = frame[1] & 0x7F
+            index = 2
+            if length == 126:
+                length = struct.unpack("!H", frame[index:index + 2])[0]
+                index += 2
+            mask = frame[index:index + 4]
+            self.assertEqual(len(mask), 4)
+            body = frame[index + 4:index + 4 + length]
+            message = json.loads(bytes(v ^ mask[i % 4] for i, v in enumerate(body)))
+            self.assertEqual(message["sessionId"], "owned-page")
+            self.assertEqual(message["params"]["expression"], "6 * 7")
+        finally:
+            left.close()
+            right.close()
+
+    def test_expected_error_response_is_returned_as_controlled_result(self):
+        left, right = socket.socketpair()
+        try:
+            response = json.dumps({"id": 92, "error": {"code": -32000, "message": "file:// disabled"}}).encode()
+            right.sendall(bytes([0x81, len(response)]) + response)
+            answer = ws.BufferedConnection(left).request(
+                92, "Target.createTarget", params={"url": "file:///nonexistent"}, expect_error=True,
+            )
+            self.assertEqual(answer["code"], -32000)
+        finally:
+            left.close()
+            right.close()
+
+    def test_expected_error_fails_on_unexpected_success(self):
+        left, right = socket.socketpair()
+        try:
+            response = json.dumps({"id": 93, "result": {"targetId": "unexpected"}}).encode()
+            right.sendall(bytes([0x81, len(response)]) + response)
+            with self.assertRaisesRegex(AssertionError, "unexpectedly succeeded"):
+                ws.BufferedConnection(left).request(
+                    93, "Target.createTarget", params={"url": "file:///nonexistent"}, expect_error=True,
+                )
+        finally:
+            left.close()
+            right.close()
+
+
 if __name__ == "__main__":
     unittest.main()

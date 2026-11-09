@@ -78,8 +78,19 @@ class BufferedConnection:
             raise AssertionError("CDP response exceeded 64 KiB test bound")
         return first & 0x0F, self.read_exact(length)
 
-    def request(self, message_id: int, method: str) -> dict:
-        payload = json.dumps({"id": message_id, "method": method, "params": {}}, separators=(",", ":")).encode()
+    def request(
+        self,
+        message_id: int,
+        method: str,
+        *,
+        params: dict | None = None,
+        session_id: str | None = None,
+        expect_error: bool = False,
+    ) -> dict:
+        request = {"id": message_id, "method": method, "params": params or {}}
+        if session_id is not None:
+            request["sessionId"] = session_id
+        payload = json.dumps(request, separators=(",", ":")).encode()
         self.stream.sendall(client_frame(payload))
         for _ in range(15):
             opcode, body = self.recv_frame()
@@ -92,9 +103,17 @@ class BufferedConnection:
                 raise AssertionError(f"unexpected CDP response opcode: {opcode}")
             response = json.loads(body)
             if response.get("id") == message_id:
-                if response.get("error") is not None:
+                error = response.get("error")
+                if expect_error:
+                    if not isinstance(error, dict):
+                        raise AssertionError(f"CDP {method} unexpectedly succeeded")
+                    return error
+                if error is not None:
                     raise AssertionError(f"CDP method {method} returned an error")
-                return response.get("result") or {}
+                result = response.get("result")
+                if not isinstance(result, dict):
+                    raise AssertionError(f"CDP method {method} returned no result object")
+                return result
         raise AssertionError(f"CDP did not answer {method} within 15 frames")
 
 
