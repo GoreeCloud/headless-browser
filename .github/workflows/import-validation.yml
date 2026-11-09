@@ -75,6 +75,8 @@ jobs:
           cargo test --locked -p obscura-cdp --lib cdp_inbound_message_channel_refuses_over_capacity -- --nocapture
       - name: Check inbound WebSocket frame and message memory budgets
         run: cargo test --locked -p obscura-cdp --lib websocket_config_caps_inbound_frames_and_messages -- --nocapture
+      - name: Verify WebSocket Upgrade cannot pin a client slot indefinitely
+        run: cargo test --locked -p obscura-cdp --lib websocket_upgrade_deadline_is_bounded_below_silent_connection_ttl -- --nocapture
       - name: Verify exact CDP HTTP discovery routing without header injection
         run: cargo test --locked -p obscura-cdp --lib discovery_router_uses_only_exact_http_request_targets -- --nocapture
       - name: Build local-only unpublished CLI executables
@@ -87,6 +89,8 @@ jobs:
         run: timeout 45s python3 scripts/verify_cdp_exact_http_route.py
       - name: Exercise native loopback CDP WebSocket and bearer enforcement
         run: python3 scripts/verify_cdp_websocket_smoke.py
+      - name: Reject incomplete WebSocket HTTP upgrade after bounded deadline
+        run: timeout 55s python3 scripts/verify_cdp_slow_upgrade_smoke.py
       - name: Flush native Browser.close acknowledgment and recover listener
         run: timeout 45s python3 scripts/verify_cdp_close_ack_smoke.py
       - name: Verify one-slot CDP admission, incumbent liveness and released-slot recovery
