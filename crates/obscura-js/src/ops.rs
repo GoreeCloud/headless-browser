@@ -74,6 +74,105 @@ pub struct InterceptedRequest {
     pub resolver: tokio::sync::oneshot::Sender<InterceptResolution>,
 }
 
+/// A script cannot queue arbitrarily many paused Fetch/XHR/document requests.
+/// Each intercepted record carries at most 64 KiB of URL/header metadata, so
+/// the 128-slot capacity also puts an 8 MiB ceiling on retained queued text.
+pub const MAX_PENDING_INTERCEPTED_REQUESTS: usize = 128;
+pub const MAX_INTERCEPTED_REQUEST_METADATA_BYTES: usize = 64 * 1024;
+
+/// Never bypass interception if its consumer is saturated or unavailable.
+/// All senders use this nonblocking gate so V8's single-threaded event loop
+/// cannot be held waiting for a full channel to drain.
+pub fn try_enqueue_intercepted_request(
+    tx: &tokio::sync::mpsc::Sender<InterceptedRequest>,
+    request: InterceptedRequest,
+) -> Result<(), &'static str> {
+    let fields = [
+        request.request_id.len(),
+        request.page_id.len(),
+        request.url.len(),
+        request.method.len(),
+        request.resource_type.len(),
+    ];
+    let metadata_bytes = fields.into_iter().chain(
+        request.headers.iter().flat_map(|(key, value)| [key.len(), value.len()])
+    ).try_fold(0_usize, |sum, len| sum.checked_add(len));
+    if !metadata_bytes.is_some_and(|bytes| bytes <= MAX_INTERCEPTED_REQUEST_METADATA_BYTES) {
+        return Err("interception request metadata exceeds 64 KiB");
+    }
+    tx.try_send(request).map_err(|err| match err {
+        tokio::sync::mpsc::error::TrySendError::Full(_) =>
+            "interception queue saturated",
+        tokio::sync::mpsc::error::TrySendError::Closed(_) =>
+            "interception consumer unavailable",
+    })
+}
+
+#[cfg(test)]
+mod goreecloud_interception_queue_tests {
+    use super::*;
+
+    fn request(url: String, headers: HashMap<String, String>) -> InterceptedRequest {
+        let (resolver, _rx) = tokio::sync::oneshot::channel();
+        InterceptedRequest {
+            request_id: "owned-test".to_owned(),
+            page_id: "owned-page".to_owned(),
+            url,
+            method: "GET".to_owned(),
+            headers,
+            resource_type: "Fetch".to_owned(),
+            resolver,
+        }
+    }
+
+    #[test]
+    fn interception_queue_refuses_129th_request_without_sending() {
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel(MAX_PENDING_INTERCEPTED_REQUESTS);
+        for i in 0..MAX_PENDING_INTERCEPTED_REQUESTS {
+            try_enqueue_intercepted_request(
+                &tx, request(format!("https://example.invalid/{i}"), HashMap::new())
+            ).expect("capacity remains for first 128");
+        }
+        assert_eq!(
+            try_enqueue_intercepted_request(
+                &tx, request("https://example.invalid/excess".into(), HashMap::new())
+            ),
+            Err("interception queue saturated"),
+        );
+        assert!(rx.try_recv().is_ok(), "refused enqueue must not remove incumbent work");
+        try_enqueue_intercepted_request(
+            &tx, request("https://example.invalid/next".into(), HashMap::new())
+        ).expect("slot is released after dequeue");
+    }
+
+    #[test]
+    fn interception_queue_enforces_metadata_size_without_enqueuing() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+        let mut headers = HashMap::new();
+        headers.insert("X-Excess".into(), "x".repeat(MAX_INTERCEPTED_REQUEST_METADATA_BYTES));
+        assert_eq!(
+            try_enqueue_intercepted_request(
+                &tx, request("https://example.invalid".into(), headers)
+            ),
+            Err("interception request metadata exceeds 64 KiB"),
+        );
+        assert!(matches!(rx.try_recv(), Err(tokio::sync::mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn interception_queue_closed_consumer_is_fail_closed() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        assert_eq!(
+            try_enqueue_intercepted_request(
+                &tx, request("https://example.invalid".into(), HashMap::new())
+            ),
+            Err("interception consumer unavailable"),
+        );
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StoredNetworkResponseBody {
     pub body: String,
@@ -472,7 +571,7 @@ pub struct ObscuraState {
     /// travels with `pending_navigation`, which carries the entry's URL, so
     /// the page can move its cursor instead of appending an entry.
     pub pending_history_traversal: Option<usize>,
-    pub intercept_tx: Option<tokio::sync::mpsc::UnboundedSender<InterceptedRequest>>,
+    pub intercept_tx: Option<tokio::sync::mpsc::Sender<InterceptedRequest>>,
     pub intercept_enabled: bool,
     /// `Fetch.enable` URL patterns. Only matching fetch()/XHR requests are
     /// sent to the interception channel; empty means every request.
@@ -4302,77 +4401,90 @@ async fn fetch_url_inner(
             resource_type: resource_type_name.to_string(),
             resolver: resolve_tx,
         };
-        if tx.send(intercepted).is_ok() {
-            was_intercepted = true;
-            network_guard.event.as_mut().unwrap().intercepted = true;
-            match resolve_rx.await {
-                Ok(InterceptResolution::Fulfill {
+        if let Err(reason) = try_enqueue_intercepted_request(&tx, intercepted) {
+            // The request was configured for interception; falling back to
+            // a direct fetch would bypass a network policy under load.
+            return Ok(serde_json::json!({
+                "status": 0, "body": "", "url": url, "headers": {},
+                "blocked": true, "error": reason,
+            }).to_string());
+        }
+        was_intercepted = true;
+        network_guard.event.as_mut().unwrap().intercepted = true;
+        match resolve_rx.await {
+            Ok(InterceptResolution::Fulfill {
+                status,
+                headers: h,
+                body: b,
+                body_base64: bb,
+            }) => {
+                network_guard.event = None;
+                // Keep fulfilled responses visible to CDP just like transport
+                // responses, including exact binary bodies and bounded retention.
+                let encoded = !bb.is_empty();
+                let body_size = if encoded { bb.trim_end_matches('=').len() * 3 / 4 } else { b.len() };
+                record_js_network_completion(&state, JsNetworkEvent {
+                    request_id: request_id.clone(), intercepted: true,
+                    error_text: None,
+                    url: url.clone(), method: method.clone(), status,
+                    resource_type: resource_type_name.to_string(),
+                    response_headers: h.clone(), body_size,
+                    timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default().as_secs_f64(),
+                }, if encoded { &bb } else { &b }, encoded);
+                let mut response = intercept_fulfill_response(
                     status,
-                    headers: h,
-                    body: b,
-                    body_base64: bb,
-                }) => {
-                    network_guard.event = None;
-                    // Keep fulfilled responses visible to CDP just like transport
-                    // responses, including exact binary bodies and bounded retention.
-                    let encoded = !bb.is_empty();
-                    let body_size = if encoded { bb.trim_end_matches('=').len() * 3 / 4 } else { b.len() };
-                    record_js_network_completion(&state, JsNetworkEvent {
-                        request_id: request_id.clone(), intercepted: true,
-                        error_text: None,
-                        url: url.clone(), method: method.clone(), status,
-                        resource_type: resource_type_name.to_string(),
-                        response_headers: h.clone(), body_size,
-                        timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default().as_secs_f64(),
-                    }, if encoded { &bb } else { &b }, encoded);
-                    let mut response = intercept_fulfill_response(
-                        status,
-                        h,
-                        &b,
-                        &bb,
-                        &url,
-                        &origin,
-                        &mode,
-                        credentials,
-                        internal_load,
-                    );
-                    response["requestId"] = serde_json::json!(request_id);
-                    return Ok(response.to_string());
-                }
-                Ok(InterceptResolution::Fail { reason }) => {
-                    // The live CDP interception consumer already reports this
-                    // explicit failure. Do not emit a second terminal event.
-                    network_guard.event = None;
-                    return Ok(serde_json::json!({
-                        "status": 0,
-                        "body": "",
-                        "url": url,
-                        "headers": {},
-                        "blocked": true,
-                        "error": reason,
-                    })
-                    .to_string());
-                }
-                Ok(InterceptResolution::Continue {
-                    url,
-                    method,
-                    headers,
-                    body,
-                }) => {
-                    override_url = url;
-                    override_method = method;
-                    override_headers = headers;
-                    override_body = body;
-                    tracing::debug!(
-                        "Interception: continue (overrides url={} method={} headers={} body={})",
-                        override_url.is_some(),
-                        override_method.is_some(),
-                        override_headers.is_some(),
-                        override_body.is_some()
-                    );
-                }
-                Err(_) => {}
+                    h,
+                    &b,
+                    &bb,
+                    &url,
+                    &origin,
+                    &mode,
+                    credentials,
+                    internal_load,
+                );
+                response["requestId"] = serde_json::json!(request_id);
+                return Ok(response.to_string());
+            }
+            Ok(InterceptResolution::Fail { reason }) => {
+                // The live CDP interception consumer already reports this
+                // explicit failure. Do not emit a second terminal event.
+                network_guard.event = None;
+                return Ok(serde_json::json!({
+                    "status": 0,
+                    "body": "",
+                    "url": url,
+                    "headers": {},
+                    "blocked": true,
+                    "error": reason,
+                })
+                .to_string());
+            }
+            Ok(InterceptResolution::Continue {
+                url,
+                method,
+                headers,
+                body,
+            }) => {
+                override_url = url;
+                override_method = method;
+                override_headers = headers;
+                override_body = body;
+                tracing::debug!(
+                    "Interception: continue (overrides url={} method={} headers={} body={})",
+                    override_url.is_some(),
+                    override_method.is_some(),
+                    override_headers.is_some(),
+                    override_body.is_some()
+                );
+            }
+            Err(_) => {
+                // The interception handler disappeared before resolving
+                // this request. Never leak a direct network fetch.
+                return Ok(serde_json::json!({
+                    "status": 0, "body": "", "url": url, "headers": {},
+                    "blocked": true, "error": "interception consumer disconnected",
+                }).to_string());
             }
         }
     }

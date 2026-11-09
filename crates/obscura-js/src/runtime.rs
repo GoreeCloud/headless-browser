@@ -1532,7 +1532,7 @@ impl ObscuraJsRuntime {
     /// answer Fetch.requestPaused events that the client never asked for.
     pub fn set_intercept_tx(
         &self,
-        tx: tokio::sync::mpsc::UnboundedSender<crate::ops::InterceptedRequest>,
+        tx: tokio::sync::mpsc::Sender<crate::ops::InterceptedRequest>,
     ) {
         let mut state = self.state.borrow_mut();
         state.intercept_tx = Some(tx);
@@ -23121,7 +23121,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn fetch_abort_errors_fulfilled_response_clones_without_native_body_resources() {
         let mut rt = setup_runtime("<html><body></body></html>");
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(crate::ops::MAX_PENDING_INTERCEPTED_REQUESTS);
         rt.set_intercept_tx(tx);
         rt.set_intercept_enabled(true);
         let fetch = rt.call_function_on_for_cdp(r#"async () => {
@@ -23959,7 +23959,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn intercepted_fetch_completion_keeps_request_identity_and_body() {
         let mut rt = redirect_chain_runtime(1);
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(crate::ops::MAX_PENDING_INTERCEPTED_REQUESTS);
         rt.set_intercept_tx(tx);
         rt.set_intercept_enabled(true);
         let fetch = rt.call_function_on_for_cdp(
@@ -24021,7 +24021,7 @@ mod tests {
             capture.lock().unwrap().push(request.resource_type);
         }));
         rt.set_callbacks(callbacks);
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(crate::ops::MAX_PENDING_INTERCEPTED_REQUESTS);
         if fulfilled {
             rt.set_intercept_tx(tx);
             rt.set_intercept_enabled(true);

@@ -1409,9 +1409,9 @@ async fn cdp_processor(
     shutdown_notify: Arc<Notify>,
 ) {
     let mut ctx = CdpContext::new_with_shared_context(default_context);
-    let (itx, irx) = mpsc::unbounded_channel::<obscura_js::ops::InterceptedRequest>();
+    let (itx, irx) = mpsc::channel::<obscura_js::ops::InterceptedRequest>(obscura_js::ops::MAX_PENDING_INTERCEPTED_REQUESTS);
     ctx.intercept_tx = Some(itx);
-    let mut intercept_rx: Option<mpsc::UnboundedReceiver<obscura_js::ops::InterceptedRequest>> = Some(irx);
+    let mut intercept_rx: Option<mpsc::Receiver<obscura_js::ops::InterceptedRequest>> = Some(irx);
     let mut intercepted_paused: HashMap<String, PausedIntercept> = HashMap::new();
 
     // Issue #19 follow-up: messages deferred from inside
@@ -2065,7 +2065,7 @@ async fn process_with_interception(
     ctx: &mut CdpContext,
     reply_tx: &CdpReplySender,
     rx: &mut mpsc::Receiver<ServerMessage>,
-    intercept_rx: &mut Option<mpsc::UnboundedReceiver<obscura_js::ops::InterceptedRequest>>,
+    intercept_rx: &mut Option<mpsc::Receiver<obscura_js::ops::InterceptedRequest>>,
     intercepted_paused: &mut HashMap<String, PausedIntercept>,
     deferred: &mut std::collections::VecDeque<ServerMessage>,
     send_command_response: bool,
@@ -4348,7 +4348,8 @@ mod tests {
             ctx.sessions.insert(session_id.clone(), page_id.clone());
             let (server_tx, mut server_rx) = tokio::sync::mpsc::channel(4096);
             let (reply_tx, mut reply_rx) = CdpReplySender::channel();
-            let (intercept_tx, intercept_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (intercept_tx, intercept_rx) =
+                tokio::sync::mpsc::channel(obscura_js::ops::MAX_PENDING_INTERCEPTED_REQUESTS);
             ctx.intercept_tx = Some(intercept_tx.clone());
             let command = json!({"id": 1, "method": "Page.navigate", "sessionId": session_id,
                 "params": {"url": format!("http://{address}/"), "waitUntil": "load"}}).to_string();
@@ -4370,7 +4371,7 @@ mod tests {
             tokio::time::pause();
             let started = tokio::time::Instant::now();
             let (resolution_tx, resolution_rx) = tokio::sync::oneshot::channel();
-            intercept_tx.send(InterceptedRequest {
+            intercept_tx.try_send(InterceptedRequest {
                 page_id: page_id.clone(),
                 request_id: "pending-test".into(), url: format!("http://{address}/pending"),
                 method: "GET".into(), headers: HashMap::new(), resource_type: "Fetch".into(),
