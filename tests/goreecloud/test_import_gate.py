@@ -67,6 +67,37 @@ class WorkflowGuards(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "disallowed marker"):
             audit.verify_workflow_text(VALID_CI + "\npackages: write\n")
 
+    def test_unreviewed_third_party_action_rejected(self):
+        with self.assertRaisesRegex(ValueError, "unreviewed"):
+            audit.verify_workflow_text(VALID_CI + "\n      - uses: example/action@main\n")
+
+    def test_unpinned_rust_setup_action_rejected(self):
+        with self.assertRaisesRegex(ValueError, "unreviewed"):
+            audit.verify_workflow_text(VALID_CI + "\n      - uses: dtolnay/rust-toolchain@stable\n")
+
+    def test_pinned_rust_setup_action_allowed(self):
+        audit.verify_workflow_text(
+            VALID_CI + f"\n      - uses: dtolnay/rust-toolchain@{audit.RUST_TOOLCHAIN_PIN}\n"
+        )
+
+    def test_second_checkout_without_credentials_false_rejected(self):
+        with self.assertRaisesRegex(ValueError, "every checkout"):
+            audit.verify_workflow_text(
+                VALID_CI + f"\n      - uses: actions/checkout@{audit.CHECKOUT_PIN}\n"
+            )
+
+    def test_other_permission_write_rejected(self):
+        with self.assertRaisesRegex(ValueError, "disallowed marker"):
+            audit.verify_workflow_text(VALID_CI + "\npull-requests: write\n")
+
+    def test_write_all_rejected(self):
+        with self.assertRaisesRegex(ValueError, "disallowed marker"):
+            audit.verify_workflow_text(VALID_CI + "\npermissions: write-all\n")
+
+    def test_event_privilege_upgrade_rejected(self):
+        with self.assertRaisesRegex(ValueError, "disallowed marker"):
+            audit.verify_workflow_text(VALID_CI + "\nworkflow_run:\n")
+
     def test_original_source_commit_is_pinned(self):
         self.assertEqual(audit.UPSTREAM_SHA, "59276a3620aed0320879f60b9f049010d568088c")
 
