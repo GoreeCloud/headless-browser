@@ -54,3 +54,7 @@ Each WebSocket connection now limits incoming CDP frame and reassembled message 
 ## Exact CDP HTTP discovery request-target routing
 
 The local CDP accept loop classifies `/json`, `/json/list`, `/json/version`, and `/json/protocol` from the parsed HTTP request **target**, not by searching arbitrary header text. This prevents WebSocket request headers or lookalike paths from being misinterpreted as discovery traffic. CI validates exact path and optional query behavior, and verifies an owned loopback WebSocket still upgrades and answers CDP commands when an unrelated header contains `/json/version`. Existing Host/Origin/bearer controls remain in force. This is route-integrity hardening, not a complete HTTP parser or request-smuggling assessment.
+
+## Native rendering feature acceptance
+
+Nonpublishing CI also builds the branded CLI with the optional `render` feature and captures only a static, owned HTML fixture on ephemeral loopback. The fixture contains no external fonts/scripts/images; only this test command opts into private-network access. The screenshot validator checks the PNG signature, IHDR checksum, bounded dimensions and terminating chunk; it intentionally does not distribute any image. This is **not** browser rendering pixel-accuracy validation, an untrusted-page sandbox or egress/privacy acceptance, a cross-platform GPU test, an image supply-chain approval, or a release gate completion.
