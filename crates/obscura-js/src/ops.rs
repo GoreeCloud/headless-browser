@@ -4280,11 +4280,7 @@ async fn fetch_url_inner(
     let internal_load = matches!(resource_type,
         ResourceType::Script | ResourceType::Stylesheet | ResourceType::Document);
     let body = body.to_vec();
-    tracing::debug!(
-        "op_fetch_url called: {} {} (intercept check pending)",
-        method,
-        url
-    );
+    tracing::debug!("op_fetch_url called: {} (URL redacted; intercept check pending)", method);
 
     let (cookie_jar, in_flight, page_in_flight, intercept_tx, page_id, request_id, proxy_url, callbacks, http_client) = {
         let state_borrow = state.borrow();

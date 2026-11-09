@@ -2647,8 +2647,7 @@ impl Page {
                         false,
                     );
                     tracing::warn!(
-                        "Refusing to execute script {} after HTTP {}",
-                        url,
+                        "Refusing to execute script (URL redacted) after HTTP {}",
                         resp.status
                     );
                     continue;
@@ -2892,7 +2891,7 @@ impl Page {
                         };
                         tracing::debug!(
                             phase = "module-graph",
-                            module = %full_url,
+                            module = "<redacted>",
                             elapsed_ms = prepare_started.elapsed().as_millis(),
                             budget_ms = prepare_budget_ms,
                             success = result.is_ok(),
@@ -2965,7 +2964,7 @@ impl Page {
                         let Some(evaluation_budget_ms) = evaluation_budget_ms(remaining_active_ms)
                         else {
                             tracing::warn!(
-                                module = url.as_deref().unwrap_or("<inline>"),
+                                module = "<redacted>",
                                 graph_elapsed_ms,
                                 queue_wait_ms = queued_at.elapsed().as_millis(),
                                 "ES module exhausted the page budget before evaluation",
@@ -2983,7 +2982,7 @@ impl Page {
                         };
                         tracing::debug!(
                             phase = "module-evaluation",
-                            module = url.as_deref().unwrap_or("<inline>"),
+                            module = "<redacted>",
                             elapsed_ms = evaluation_started.elapsed().as_millis(),
                             graph_elapsed_ms,
                             queue_wait_ms,
@@ -3045,7 +3044,7 @@ impl Page {
                     let Some(evaluation_budget_ms) = evaluation_budget_ms(remaining_active_ms)
                     else {
                         tracing::warn!(
-                            module = url.as_deref().unwrap_or("<inline>"),
+                            module = "<redacted>",
                             graph_elapsed_ms,
                             queue_wait_ms = queued_at.elapsed().as_millis(),
                             "ES module exhausted the page budget before post-parse evaluation",
@@ -3063,7 +3062,7 @@ impl Page {
                     };
                     tracing::debug!(
                         phase = "module-evaluation",
-                        module = url.as_deref().unwrap_or("<inline>"),
+                        module = "<redacted>",
                         elapsed_ms = evaluation_started.elapsed().as_millis(),
                         graph_elapsed_ms,
                         queue_wait_ms,

@@ -44,7 +44,10 @@ class PrivateDiagnosticLoggingTests(unittest.TestCase):
         self.assertNotRegex(
             cookie, r"tracing::(?:info|warn|debug|error)!\([^;]*cookie_path\.display\(\)",
         )
-        self.assertGreaterEqual(page.count("URL redacted"), 14)
+        self.assertGreaterEqual(page.count("URL redacted"), 15)
+        self.assertNotIn('module = %full_url', page)
+        self.assertNotIn('module = url.as_deref()', page)
+        self.assertNotIn('"Refusing to execute script {} after HTTP {}"', page)
         self.assertGreaterEqual(cookie.count("path redacted"), 4)
 
     def test_url_tokens_are_not_explicit_fields_in_network_logs(self):
@@ -60,9 +63,11 @@ class PrivateDiagnosticLoggingTests(unittest.TestCase):
         ops = source("crates/obscura-js/src/ops.rs")
         runtime = source("crates/obscura-js/src/runtime.rs")
         self.assertNotIn("op_fetch_url completed: {} {} ({} bytes)", ops)
+        self.assertNotIn("op_fetch_url called: {} {} (intercept check pending)", ops)
+        self.assertNotIn("url = %load.url,", runtime)
         self.assertNotIn("tracing::debug!(url = %load.url,", runtime)
         self.assertIn("op_fetch_url completed: {} (URL redacted", ops)
-        self.assertGreaterEqual(runtime.count("URL redacted"), 2)
+        self.assertGreaterEqual(runtime.count("URL redacted"), 3)
 
 
 if __name__ == "__main__":

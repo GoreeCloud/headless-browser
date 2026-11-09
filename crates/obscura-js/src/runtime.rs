@@ -2472,9 +2472,8 @@ impl ObscuraJsRuntime {
             deno_core::futures::pin_mut!(loads);
             while let Some(load) = loads.next().await {
                 tracing::debug!(
-                    url = %load.url,
                     ok = load.response.is_some(),
-                    "render resource load finished"
+                    "render resource load finished (URL redacted)"
                 );
                 if tx.send(load).is_err() {
                     break;
