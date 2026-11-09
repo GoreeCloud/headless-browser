@@ -22,7 +22,7 @@ cargo build -p obscura-cli --bin goreecloud-headless-browser --features render
 ./target/debug/goreecloud-headless-browser --help
 ```
 
-The original `obscura` and `obscura-worker` binaries are retained. Building requires Rust and the inherited Obscura toolchain/dependencies; inspect [upstream build instructions](docs/Build-from-source.md) before installing or executing any dependencies. **No build or runtime compatibility is asserted by this import alone.**
+The original `obscura` and `obscura-worker` binaries are retained. Both `obscura --help` and `goreecloud-headless-browser --help` retain their appropriate command identity. Building requires Rust and the inherited Obscura toolchain/dependencies; inspect [upstream build instructions](docs/Build-from-source.md) before installing or executing any dependencies. **No build or runtime compatibility is asserted by this import alone.**
 
 ## Privacy and security
 
@@ -43,3 +43,7 @@ GoreeCloud Headless Browser is independently maintained. It is **not an official
 ## Contribution and updates
 
 Changes should enter through reviewed branches/PRs. Upstream changes must be fetched and assessed for licensing, security, tests, build compatibility, and potential conflicts before merging. The upstream Docker-publishing, release, and full-build workflows were deliberately removed from the active import tree; only a read-only, static import validation workflow remains until appropriately reviewed and restored.
+
+### Source-validation scope
+
+The read-only GitHub Actions workflow checks preserved upstream history, licensing attribution and workflows; inspects Cargo binary registration without executing build scripts; tests the isolated CLI identity module; and, only after those checks pass, runs the inherited SSRF unit tests and a bounded Rust CLI typecheck on a disposable hosted runner. The typecheck may execute inherited dependency/build scripts **only inside that CI runner**. This is not a release build, end-to-end CDP test, browser runtime acceptance, complete code/security audit, or deployment.

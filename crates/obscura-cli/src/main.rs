@@ -1,11 +1,12 @@
 mod batch;
+mod brand;
 
 use std::sync::Arc;
 use std::time::Instant;
 
 mod pool;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use obscura_browser::{BrowserContext, Page};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as TokioCommand;
@@ -264,21 +265,31 @@ enum DumpFormat {
     Cookies,
 }
 
-fn print_banner(port: u16) {
+fn command_for_invocation(invocation: &std::ffi::OsStr) -> clap::Command {
+    let name = brand::command_name(invocation);
+    let about = if name == brand::OBSCURA_COMMAND {
+        "Obscura compatibility CLI (attributed GoreeCloud Headless Browser derivative)"
+    } else {
+        "GoreeCloud Headless Browser - an attributed Obscura-based headless browser"
+    };
+    Args::command().name(name).bin_name(name).about(about)
+}
+
+fn parse_invoked_args() -> Args {
+    let invocation = std::env::args_os().next().unwrap_or_default();
+    let matches = command_for_invocation(&invocation).get_matches();
+    Args::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
+fn print_banner(port: u16, host: &str) {
+    let invocation = std::env::args_os().next().unwrap_or_default();
+    let command_name = brand::command_name(&invocation);
     println!(
-        r#"
-   ____  _                              
-  / __ \| |                             
- | |  | | |__  ___  ___ _   _ _ __ __ _ 
- | |  | | '_ \/ __|/ __| | | | '__/ _` |
- | |__| | |_) \__ \ (__| |_| | | | (_| |
-  \____/|_.__/|___/\___|\__,_|_|  \__,_|
-                   
-  Headless Browser v{}
-  CDP server: ws://127.0.0.1:{}/devtools/browser
-"#,
+        "\n  {} v{}\n  CDP bind address: {}:{}\n",
+        brand::display_name(command_name),
         env!("OBSCURA_BUILD_VERSION"),
-        port
+        host,
+        port,
     );
 }
 
@@ -399,7 +410,7 @@ fn operator_network_error(error: impl std::fmt::Display) -> String {
 
 #[tokio::main(flavor = "current_thread")]
 async fn run_cli() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let args = parse_invoked_args();
 
     // Pin the process timezone before V8/ICU reads it. V8 sources the zone for
     // both Date (getTimezoneOffset, toString) and Intl.DateTimeFormat from TZ; left
@@ -498,7 +509,7 @@ async fn run_cli() -> anyhow::Result<()> {
                 anyhow::bail!("--ready-file requires --workers 1");
             }
             if port != 0 {
-                print_banner(port);
+                print_banner(port, &host);
             }
             if let Some(ref dir) = storage_dir {
                 tracing::info!("Storage dir: {}", dir.display());
@@ -673,7 +684,7 @@ async fn run_cli() -> anyhow::Result<()> {
             }
         }
         None => {
-            print_banner(args.port);
+            print_banner(args.port, "127.0.0.1");
             if let Some(ref proxy) = args.proxy {
                 tracing::info!("Using proxy: {}", proxy);
             }
@@ -2442,6 +2453,18 @@ mod tests {
     };
     use clap::Parser;
     use obscura_dom::parse_html;
+
+    #[test]
+    fn dual_cli_help_names_match_invocation() {
+        for (invocation, expected) in [("obscura", "obscura"), ("goreecloud-headless-browser", "goreecloud-headless-browser")] {
+            let mut command = super::command_for_invocation(std::ffi::OsStr::new(invocation));
+            let mut help = Vec::new();
+            command.write_long_help(&mut help).expect("clap help should render");
+            let help = String::from_utf8(help).expect("clap help should be UTF-8");
+            assert!(help.contains(&format!("Usage: {expected}")), "wrong identity: {help}");
+        }
+    }
+
 
     // Issue #117 — `--dump original` short-circuits the browser stack and
     // streams the raw response body verbatim, including for binary payloads.
