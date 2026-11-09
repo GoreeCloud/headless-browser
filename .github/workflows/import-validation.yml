@@ -69,6 +69,10 @@ jobs:
         run: |
           cargo test --locked -p obscura-cdp --lib browser_close_only_matches_the_exact_protocol_method -- --nocapture
           cargo test --locked -p obscura-cdp --lib connection_init_filter_does_not_swallow_user_response_data -- --nocapture
+      - name: Enforce bounded per-connection CDP command count and retained bytes
+        run: |
+          cargo test --locked -p obscura-cdp --lib cdp_inbound_byte_budget_is_held_until_command_drops -- --nocapture
+          cargo test --locked -p obscura-cdp --lib cdp_inbound_message_channel_refuses_over_capacity -- --nocapture
       - name: Check inbound WebSocket frame and message memory budgets
         run: cargo test --locked -p obscura-cdp --lib websocket_config_caps_inbound_frames_and_messages -- --nocapture
       - name: Verify exact CDP HTTP discovery routing without header injection
