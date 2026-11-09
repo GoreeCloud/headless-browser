@@ -41,6 +41,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **CDP command backpressure:** [docs/CDP_COMMAND_BACKPRESSURE.md](docs/CDP_COMMAND_BACKPRESSURE.md) (256 incoming queued commands; 16 MiB queued request text)
 - **CDP reply backpressure:** [docs/CDP_REPLY_BACKPRESSURE.md](docs/CDP_REPLY_BACKPRESSURE.md) (512 queued responses/events; 32 MiB queued reply text; process RSS is not fully bounded)
 - **Interception queue policy:** [docs/INTERCEPTION_BACKPRESSURE.md](docs/INTERCEPTION_BACKPRESSURE.md) (bounded Fetch/XHR/document intercepts; fail-closed on saturation or consumer loss)
+- **Interception decision deadline:** [docs/INTERCEPTION_DECISION_DEADLINE.md](docs/INTERCEPTION_DECISION_DEADLINE.md) (60-second shared fail-closed wait for unanswered Fetch/XHR/document decisions)
 - **Paused Fetch decisions:** [docs/CDP_PAUSED_INTERCEPTIONS.md](docs/CDP_PAUSED_INTERCEPTIONS.md) (128 outstanding decisions, duplicate-ID refusal and canceled-request cleanup)
 - **Fetch.enable consumer gate:** [docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md](docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md) (do not enable policy when the receiver is unavailable or closed)
 - **Dependency audit status:** [docs/SUPPLY_CHAIN_REVIEW.md](docs/SUPPLY_CHAIN_REVIEW.md) (locked inventory only; licensing/SBOM review open)
