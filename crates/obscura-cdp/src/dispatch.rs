@@ -120,7 +120,7 @@ pub struct CdpContext {
     page_contexts: HashMap<String, Vec<i64>>,
     page_isolated_worlds: HashMap<String, Vec<String>>,
     pub fetch_intercept: FetchInterceptState,
-    pub intercept_tx: Option<tokio::sync::mpsc::UnboundedSender<InterceptedRequest>>,
+    pub intercept_tx: Option<tokio::sync::mpsc::Sender<InterceptedRequest>>,
     // Open IO streams for Fetch.takeResponseBodyAsStream. Each holds a response
     // body taken out of the page cache so a large download is streamed
     // chunk-by-chunk via IO.read and freed on IO.close (issue #360). The store
