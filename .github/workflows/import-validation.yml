@@ -97,3 +97,5 @@ jobs:
         run: timeout 900s cargo build --locked -p obscura-cli --bin goreecloud-headless-browser --features render
       - name: Capture and validate PNG from only the owned HTML fixture
         run: timeout 100s python3 scripts/verify_render_png_smoke.py
+      - name: Print and validate a raster PDF from only the owned HTML fixture
+        run: timeout 120s python3 scripts/verify_render_pdf_smoke.py
