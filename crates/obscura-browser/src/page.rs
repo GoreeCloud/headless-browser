@@ -1817,7 +1817,13 @@ impl Page {
             || (!self.intercept_block_patterns.is_empty() && !self.intercept_block_patterns.iter().any(|pattern| url_matches_cdp_pattern(pattern, url.as_str()))) {
             return Ok(None);
         }
-        let Some(tx) = &self.intercept_tx else { return Ok(None); };
+        let Some(tx) = &self.intercept_tx else {
+            // Even outside CDP, an enabled interception policy must not be
+            // bypassed simply because no request consumer was installed.
+            return Err(PageError::NetworkError(
+                "net::ERR_BLOCKED_BY_CLIENT: interception consumer unavailable".into(),
+            ));
+        };
         let request_headers = self.http_client.extra_headers.read().await.clone();
         let (resolver, resolution) = tokio::sync::oneshot::channel();
         let request = InterceptedRequest {request_id: format!("{}.{}", self.id, self.network_event_counter + 1),
@@ -7186,7 +7192,25 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn fetch_interception_patterns_do_not_block_parser_scripts() {
+    async fn low_level_intercept_navigation_requires_a_consumer_for_matching_requests() {
+        let context = std::sync::Arc::new(crate::BrowserContext::with_storage_and_network(
+            "missing-intercept-consumer".into(), None, false, None, None, true,
+        ));
+        let mut page = super::Page::new("missing-intercept-consumer".into(), context);
+        page.intercept_block_patterns = vec!["*".into()];
+        page.enable_intercept(true);
+        let url = url::Url::parse("http://127.0.0.1:9/owned-test").unwrap();
+        let result = page.intercept_navigation(&url, "GET", "", None).await;
+        match result {
+            Err(super::PageError::NetworkError(reason)) => {
+                assert!(reason.contains("interception consumer unavailable"), "{reason}");
+            }
+            _ => panic!("missing interception consumer should fail closed"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fetch_nonmatching_interception_patterns_do_not_block_parser_scripts() {
         let (url, _) = spawn_script_resource_cache_server(false);
         let context = std::sync::Arc::new(crate::BrowserContext::with_storage_and_network(
             "fetch-pattern-is-not-blocklist".to_string(),
@@ -7197,7 +7221,10 @@ mod tests {
             true,
         ));
         let mut page = super::Page::new("fetch-pattern-is-not-blocklist".to_string(), context);
-        page.intercept_block_patterns = vec!["*".to_string()];
+        // A nonmatching pattern must still permit ordinary network and
+        // parser scripts. A matching pattern without a consumer is blocked
+        // by the separate fail-closed admission test above.
+        page.intercept_block_patterns = vec!["*never-matches.invalid/*".to_string()];
         page.enable_intercept(true);
 
         page.navigate(&url).await.unwrap();
@@ -7209,7 +7236,7 @@ mod tests {
                 .evaluate("globalThis.__runs")
                 .unwrap(),
             serde_json::json!(32.0),
-            "Fetch.enable patterns pause matching requests; they are not blocked URLs",
+            "nonmatching Fetch URL patterns must not block parser scripts",
         );
     }
 

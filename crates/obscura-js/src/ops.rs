@@ -179,6 +179,37 @@ mod goreecloud_interception_queue_tests {
     }
 
     #[test]
+    fn matching_js_interception_requires_an_available_sender() {
+        let target = "https://example.invalid/data";
+        let matching = vec!["https://example.invalid/*".to_owned()];
+        let nonmatching = vec!["https://other.invalid/*".to_owned()];
+        assert!(matches!(
+            select_interception_sender(true, &matching, target, None),
+            Err("interception consumer unavailable")
+        ));
+        assert!(matches!(
+            select_interception_sender(false, &matching, target, None),
+            Ok(None)
+        ));
+        assert!(matches!(
+            select_interception_sender(true, &nonmatching, target, None),
+            Ok(None)
+        ));
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        assert!(matches!(
+            select_interception_sender(true, &matching, target, Some(&tx)),
+            Ok(Some(_))
+        ));
+        drop(rx);
+        // A closed sender remains present but a subsequent enqueue will be
+        // rejected fail-closed by the bounded admission gate.
+        assert!(matches!(
+            select_interception_sender(true, &matching, target, Some(&tx)),
+            Ok(Some(_))
+        ));
+    }
+
+    #[test]
     fn interception_queue_refuses_129th_request_without_sending() {
         let (tx, mut rx) =
             tokio::sync::mpsc::channel(MAX_PENDING_INTERCEPTED_REQUESTS);
@@ -4283,6 +4314,20 @@ pub(crate) fn should_intercept_url(enabled: bool, patterns: &[String], url: &str
     enabled && (patterns.is_empty() || patterns.iter().any(|pattern| url_matches_cdp_pattern(pattern, url)))
 }
 
+/// Do not interpret an unavailable interceptor as permission to bypass
+/// enabled network interception. Nonmatching URLs are deliberately unaffected.
+fn select_interception_sender(
+    enabled: bool,
+    patterns: &[String],
+    url: &str,
+    sender: Option<&tokio::sync::mpsc::Sender<InterceptedRequest>>,
+) -> Result<Option<tokio::sync::mpsc::Sender<InterceptedRequest>>, &'static str> {
+    if !should_intercept_url(enabled, patterns, url) {
+        return Ok(None);
+    }
+    sender.cloned().map(Some).ok_or("interception consumer unavailable")
+}
+
 /// Build the JS-facing result for an intercepted request a CDP client chose to
 /// fulfill (`Fetch.fulfillRequest`). Mirrors the normal fetch result contract:
 /// `body` is a lossy text view and `bodyBase64` carries the exact bytes, which
@@ -4411,10 +4456,18 @@ async fn fetch_url_inner(
         // The CDP resolver map spans pages and navigations on a connection.
         static NEXT_REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         let request_id = format!("fetch-{}", NEXT_REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
-        let itx = if should_intercept_url(gs.intercept_enabled, &gs.intercept_url_patterns, &url) {
-            gs.intercept_tx.clone()
-        } else {
-            None
+        let itx = match select_interception_sender(
+            gs.intercept_enabled, &gs.intercept_url_patterns, &url, gs.intercept_tx.as_ref(),
+        ) {
+            Ok(sender) => sender,
+            Err(reason) => {
+                // A low-level Page/JS user may enable interception without a
+                // CDP session. Do not silently use HTTP with no policy handler.
+                return Ok(serde_json::json!({
+                    "status": 0, "body": "", "url": url, "headers": {},
+                    "blocked": true, "error": reason,
+                }).to_string());
+            }
         };
         (
             jar,

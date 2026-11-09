@@ -46,6 +46,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **Render-resource response-size policy:** [docs/RENDER_RESOURCE_BODY_BUDGET.md](docs/RENDER_RESOURCE_BODY_BUDGET.md) (background image/font responses capped at 16 MiB decoded body per fetch)
 - **Paused Fetch decisions:** [docs/CDP_PAUSED_INTERCEPTIONS.md](docs/CDP_PAUSED_INTERCEPTIONS.md) (128 outstanding decisions, duplicate-ID refusal and canceled-request cleanup)
 - **Fetch.enable consumer gate:** [docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md](docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md) (do not enable policy when the receiver is unavailable or closed)
+- **Low-level interception consumer gate:** [docs/LOW_LEVEL_INTERCEPTION_POLICY.md](docs/LOW_LEVEL_INTERCEPTION_POLICY.md) (matching JS and document requests fail closed without a handler)
 - **Dependency audit status:** [docs/SUPPLY_CHAIN_REVIEW.md](docs/SUPPLY_CHAIN_REVIEW.md) (locked inventory only; licensing/SBOM review open)
 - **Imported graphics rights:** [docs/IMPORTED_ASSET_RIGHTS.md](docs/IMPORTED_ASSET_RIGHTS.md) (upstream provenance verified; sponsor/brand use unapproved)
 - **GoreeShield log minimization:** [docs/LOG_DATA_MINIMIZATION.md](docs/LOG_DATA_MINIMIZATION.md) (targeted URL, request-ID and cookie-path redaction; full log audit open)
