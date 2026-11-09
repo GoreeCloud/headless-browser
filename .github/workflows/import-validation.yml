@@ -80,6 +80,11 @@ jobs:
           cargo test --locked -p obscura-cdp --lib cdp_outgoing_byte_overflow_refuses_even_if_message_slots_remain -- --nocapture
       - name: Fail closed on saturated or unavailable JavaScript interception consumers
         run: timeout 360s cargo test --locked -p obscura-js --lib goreecloud_interception_queue_tests -- --nocapture
+      - name: Fail closed on missing low-level JavaScript and Page interception consumers
+        run: |
+          cargo test --locked -p obscura-js --lib matching_js_interception_requires_an_available_sender -- --nocapture
+          cargo test --locked -p obscura-browser --lib low_level_intercept_navigation_requires_a_consumer_for_matching_requests -- --nocapture
+          cargo test --locked -p obscura-browser --lib fetch_nonmatching_interception_patterns_do_not_block_parser_scripts -- --nocapture
       - name: Expire unanswered Fetch and document interception decisions
         run: timeout 360s cargo test --locked -p obscura-js --lib interception_decision_deadline_ -- --nocapture
       - name: Bound unresolved CDP Fetch request decisions and duplicate IDs
