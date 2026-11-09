@@ -140,7 +140,17 @@ def main() -> None:
         require_version(port)
         require_rejected(port, {"Host": "malicious.invalid"}, 403)
         require_rejected(port, {"Origin": "https://malicious.invalid"}, 403)
-    print("PASS: local GoreeCloud CDP discovery; foreign Host/Origin rejected")
+        # A Host is an authority only: reject URL userinfo and components
+        # even when the resolved host would otherwise match 127.0.0.1.
+        for malformed in (
+            f"attacker@127.0.0.1:{port}",
+            f"user:password@127.0.0.1:{port}",
+            f"127.0.0.1:{port}/hidden",
+            f"127.0.0.1:{port}?query=1",
+            f"127.0.0.1:{port}#fragment",
+        ):
+            require_rejected(port, {"Host": malformed}, 403)
+    print("PASS: local GoreeCloud CDP discovery; foreign/malformed Host and Origin rejected")
 
     bearer = secrets.token_urlsafe(32)
     with disposable_cdp_server("obscura", bearer) as port:
