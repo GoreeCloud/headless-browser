@@ -46,3 +46,7 @@ An inert, fixed HTML document is served solely from a disposable 127.0.0.1 port 
 ## Structured CDP command and response filtering
 
 WebSocket shutdown is recognized only when the parsed CDP request method is exactly `Browser.close`, not when arbitrary JSON params contain that text. Internal `__init` connection envelopes are filtered only when they are top-level control records without a CDP response ID; nested user-result fields remain deliverable. Source regressions and real owned-loopback WebSocket/Runtime tests guard against accidental CDP disconnects and swallowed replies. This is a targeted protocol integrity improvement, not a full WebSocket fuzz test or an authorization policy.
+
+## CDP inbound WebSocket memory budget
+
+Each WebSocket connection now limits incoming CDP frame and reassembled message sizes to 16 MiB. This reduces the per-client memory exposure from Tungstenite's default 64 MiB message limit while leaving outbound CDP screenshot/DOM responses unaffected. CI validates the configured Rust budget and sends only an oversized **masked frame header** to an owned-loopback listener, requiring a prompt refusal without sending a large payload, then confirms that a subsequent valid client still works. This is a per-message parser guard, not a total per-client/process memory budget, rate limiter, proof against hostile clients, or production network policy.
