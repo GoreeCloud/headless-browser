@@ -22,6 +22,6 @@ This records a source-level inspection of the imported and modified [Dockerfile]
 
 ## Automated review boundary
 
-Run **python3 scripts/verify_container_source_policy.py** to check the current Dockerfile *without executing Docker*. The narrow structural allowlist rejects unreviewed builder/runtime stage changes, root runtime overrides, unexpected ADD commands, embedded CDP secrets or private-network bypass, unsafe binary/entrypoint drift and a masked final release build. A passing check is **not** a container build, image provenance validation, privilege audit, security certification or redistribution approval.
+Run **python3 scripts/verify_container_source_policy.py** to check the current Dockerfile *without executing Docker*. The narrow structural allowlist normalizes case-insensitive Docker instruction keywords, rejects unreviewed parser directives, and pins a SHA-256 of the 26 reviewed noncomment instructions. It rejects unreviewed builder/runtime stage or instruction changes (including extra lowercase FROM, USER and ENTRYPOINT lines), root runtime overrides, unexpected ADD commands, embedded CDP secrets or private-network bypass, unsafe binary/entrypoint drift and a masked final release build. Updating the source digest requires an explicit code and dependency review. A passing check is **not** a container build, image provenance validation, privilege audit, security certification or redistribution approval.
 
 Track the remaining gate in [Issue #2](https://github.com/GoreeCloud/headless-browser/issues/2).

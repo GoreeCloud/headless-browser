@@ -63,6 +63,37 @@ class ContainerSourcePolicyTests(unittest.TestCase):
     def test_extra_docker_stage_requires_review(self):
         self.validate(DOCKERFILE + "\nFROM alpine:latest\n", "stages")
 
+    def test_equivalent_lowercase_instruction_keyword_is_normalized(self):
+        changed = DOCKERFILE.replace("FROM rust:1-slim-bookworm", "from rust:1-slim-bookworm", 1)
+        self.assertNotEqual(changed, DOCKERFILE)
+        audit.verify_dockerfile(changed, CDP)
+
+    def test_lowercase_runtime_user_is_not_ignored(self):
+        self.validate(DOCKERFILE + "\nuser root\n", "runtime USER")
+
+    def test_tab_separated_runtime_user_is_not_ignored(self):
+        self.validate(DOCKERFILE + "\nuser\troot\n", "runtime USER")
+
+    def test_lowercase_extra_stage_is_not_ignored(self):
+        self.validate(DOCKERFILE + "\nfrom alpine:latest\n", "stages")
+
+    def test_second_lowercase_entrypoint_cannot_override_reviewed_binary(self):
+        self.validate(DOCKERFILE + '\nentrypoint ["/obscura"]\n', "source drift")
+
+    def test_additional_builder_shell_command_fails_review_hash(self):
+        changed = DOCKERFILE.replace(
+            "WORKDIR /build", "WORKDIR /build\nRUN echo unexpected-build-command", 1,
+        )
+        self.assertNotEqual(changed, DOCKERFILE)
+        self.validate(changed, "source drift")
+
+    def test_lowercase_secret_environment_is_not_ignored(self):
+        self.validate(DOCKERFILE + "\nenv OBSCURA_CDP_TOKEN=not-secret\n", "secret")
+
+    def test_unreviewed_parser_directive_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "parser directive"):
+            audit.instructions("# escape=`\n" + DOCKERFILE)
+
     def test_unterminated_continuation_rejected(self):
         with self.assertRaisesRegex(ValueError, "unfinished"):
             audit.instructions("FROM rust:1-slim-bookworm AS builder\nRUN something \\")
