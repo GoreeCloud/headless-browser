@@ -2467,16 +2467,40 @@ async fn handle_connection_ws(
         tracing::debug!("Connection init: {}", &init_msg[..init_msg.len().min(100)]);
     }
 
-    let send_task = tokio::task::spawn_local(async move {
-        while let Some(msg) = reply_rx.recv().await {
-            if is_connection_init_message(&msg) {
-                continue;
-            }
-            if ws_sender.send(Message::Text(msg.into())).await.is_err() {
-                break;
+    // Browser.close is the final protocol command for this connection.
+    // A normal reply queued to reply_tx is not enough: after breaking out of
+    // the inbound loop, aborting send_task can discard that queued response.
+    // Use a dedicated one-shot close path and join the sender after it flushes
+    // the response and sends the WebSocket close frame.
+    let (close_reply_tx, mut close_reply_rx) = tokio::sync::oneshot::channel::<String>();
+    let mut close_reply_tx = Some(close_reply_tx);
+    let mut send_task = tokio::task::spawn_local(async move {
+        loop {
+            tokio::select! {
+                biased;
+                closing = &mut close_reply_rx => {
+                    if let Ok(response) = closing {
+                        if ws_sender.send(Message::Text(response.into())).await.is_ok() {
+                            let _ = ws_sender.close().await;
+                        }
+                    }
+                    break;
+                }
+                reply = reply_rx.recv() => {
+                    match reply {
+                        Some(msg) if is_connection_init_message(&msg) => continue,
+                        Some(msg) => {
+                            if ws_sender.send(Message::Text(msg.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
             }
         }
     });
+    let mut closing = false;
 
     while let Some(msg) = ws_receiver.next().await {
         let msg = match msg {
@@ -2491,8 +2515,10 @@ async fn handle_connection_ws(
             Message::Text(text) => {
                 if let Some(req) = browser_close_request(&text) {
                     let resp = crate::types::CdpResponse::success(req.id, json!({}), req.session_id);
-                    if let Ok(json) = serde_json::to_string(&resp) {
-                        let _ = reply_tx.send(json);
+                    if let (Ok(json), Some(tx)) =
+                        (serde_json::to_string(&resp), close_reply_tx.take())
+                    {
+                        closing = tx.send(json).is_ok();
                     }
                     break;
                 }
@@ -2514,6 +2540,17 @@ async fn handle_connection_ws(
         }
     }
 
+    if closing {
+        // A client may stop reading at any point; do not retain the processor
+        // thread indefinitely. This timeout also protects normal shutdown
+        // from a failed or stalled close handshake.
+        if tokio::time::timeout(std::time::Duration::from_secs(2), &mut send_task)
+            .await
+            .is_err()
+        {
+            warn!("CDP Browser.close response flush timed out");
+        }
+    }
     send_task.abort();
     Ok(())
 }
