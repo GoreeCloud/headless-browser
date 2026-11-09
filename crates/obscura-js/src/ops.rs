@@ -4325,7 +4325,7 @@ fn select_interception_sender(
     if !should_intercept_url(enabled, patterns, url) {
         return Ok(None);
     }
-    sender.cloned().ok_or("interception consumer unavailable")
+    sender.cloned().map(Some).ok_or("interception consumer unavailable")
 }
 
 /// Build the JS-facing result for an intercepted request a CDP client chose to

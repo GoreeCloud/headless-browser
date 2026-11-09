@@ -13,7 +13,7 @@ class LowLevelInterceptionPolicyTests(unittest.TestCase):
     def test_js_sender_selection_fails_closed(self):
         ops = (ROOT / "crates/obscura-js/src/ops.rs").read_text()
         self.assertIn('fn select_interception_sender(', ops)
-        self.assertIn('sender.cloned().ok_or("interception consumer unavailable")', ops)
+        self.assertIn('sender.cloned().map(Some).ok_or("interception consumer unavailable")', ops)
         self.assertIn('let itx = match select_interception_sender(', ops)
         self.assertIn('"blocked": true, "error": reason', ops)
         self.assertNotIn('let itx = if should_intercept_url(', ops)
