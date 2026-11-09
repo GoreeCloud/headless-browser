@@ -34,3 +34,7 @@ The inbound CDP HTTP and WebSocket gateway rejects repeated Host fields (includi
 ## CDP fail-closed startup checks
 
 The development CI runner tests four pre-bind failures: an unauthenticated nonloopback address (using nonlocal documentation-only 192.0.2.123, not a wildcard listener), a bearer token shorter than 32 bytes, forwarded nonloopback authority without authentication, and incomplete forwarded authority configuration. These checks must exit promptly with the expected guard message and **must not publish a ready file**. They do not authorize public CDP exposure; a long token is not proof of adequate production authentication, transport encryption, network isolation or credential governance.
+
+## CDP about:blank and local-file guard
+
+A disposable CI WebSocket session checks that Target.createTarget rejects a deliberately nonexistent file:// URL by default, opens and attaches to about:blank, runs only the harmless expression 6 * 7 using Runtime.evaluate, and closes the target without leaving an active target listing. No external navigation, real filesystem contents, user data, or arbitrary site scripts are involved. Passing does not prove comprehensive local-file isolation, untrusted JavaScript sandboxing, cross-origin protections, remote egress controls or production CDP readiness.
