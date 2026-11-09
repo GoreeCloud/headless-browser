@@ -36,6 +36,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **License:** [Apache License 2.0](LICENSE); original authorship, third-party vendor licenses, and [attribution](NOTICE) are retained
 - **Original upstream README:** [UPSTREAM_README.md](UPSTREAM_README.md)
 - **Integration record:** [docs/IMPORT_PROVENANCE.md](docs/IMPORT_PROVENANCE.md)
+- **Dependency audit status:** [docs/SUPPLY_CHAIN_REVIEW.md](docs/SUPPLY_CHAIN_REVIEW.md) (locked inventory only; licensing/SBOM review open)
 - **Upstream feature documentation:** [docs/README.md](docs/README.md)
 
 GoreeCloud Headless Browser is independently maintained. It is **not an official Obscura distribution** and has no implied affiliation or endorsement. The original Obscura project name remains in technical code, inherited APIs, and historical attribution where appropriate.

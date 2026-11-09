@@ -22,6 +22,8 @@ jobs:
         run: python3 -m unittest discover -s tests/goreecloud -p "test_*.py" -v
       - name: Check Cargo binary registration (manifest only, no build scripts)
         run: python3 scripts/verify_cargo_targets.py
+      - name: Inspect locked dependency sources without fetching or compiling
+        run: python3 scripts/inventory_cargo_lock.py
       - name: Test dependency-free CLI identity code (no upstream build scripts)
         run: |
           rustc --edition=2021 --test crates/obscura-cli/src/brand.rs -o "$RUNNER_TEMP/goreecloud-brand-tests"
