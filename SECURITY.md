@@ -38,3 +38,7 @@ The development CI runner tests four pre-bind failures: an unauthenticated nonlo
 ## CDP about:blank and local-file guard
 
 A disposable CI WebSocket session checks that Target.createTarget rejects a deliberately nonexistent file:// URL by default, opens and attaches to about:blank, runs only the harmless expression 6 * 7 using Runtime.evaluate, and closes the target without leaving an active target listing. No external navigation, real filesystem contents, user data, or arbitrary site scripts are involved. Passing does not prove comprehensive local-file isolation, untrusted JavaScript sandboxing, cross-origin protections, remote egress controls or production CDP readiness.
+
+## Owned HTTP fixture and private-network opt-in
+
+An inert, fixed HTML document is served solely from a disposable 127.0.0.1 port with no external resources. The CDP browser must **not** fetch it with the default SSRF settings. A separate fresh loopback-only CDP instance is permitted to fetch exactly that local fixture using the explicit --allow-private-network flag; the test checks its DOM title/marker and target cleanup. This narrow opt-in is only a CI test exception, not a GoreeShield or Wardveil approval to enable internal-network browsing, bypass DNS/redirect restrictions, or visit third-party sites.
