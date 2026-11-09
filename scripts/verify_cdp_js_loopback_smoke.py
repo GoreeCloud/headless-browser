@@ -52,6 +52,17 @@ def check_trusted_blank_page(peer: BufferedConnection) -> None:
     if result.get("type") != "number":
         raise AssertionError("CDP Runtime.evaluate did not report a numeric result")
 
+    # A nested __init field is legitimate user data and must not be swallowed
+    # by the server's private connection-initialization envelope filter.
+    nested = peer.request(
+        16, "Runtime.evaluate",
+        params={"expression": "({__init: true, note: 'Browser.close'})", "returnByValue": True},
+        session_id=session,
+    )
+    value = nested.get("result", {}).get("value")
+    if value != {"__init": True, "note": "Browser.close"}:
+        raise AssertionError("CDP response containing user __init data was lost or corrupted")
+
     closed = peer.request(14, "Target.closeTarget", params={"targetId": target_id})
     if closed.get("success") is not True:
         raise AssertionError("about:blank target was not closed cleanly")

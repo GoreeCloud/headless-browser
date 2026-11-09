@@ -63,6 +63,10 @@ jobs:
         run: |
           cargo test --locked -p obscura-cdp --lib rejects_duplicate_sensitive_http_headers -- --nocapture | tee "$RUNNER_TEMP/cdp-duplicate-header-test.log"
           grep -E "test result: ok\. 1 passed; 0 failed" "$RUNNER_TEMP/cdp-duplicate-header-test.log"
+      - name: Verify CDP commands and private initialization use structured JSON
+        run: |
+          cargo test --locked -p obscura-cdp --lib browser_close_only_matches_the_exact_protocol_method -- --nocapture
+          cargo test --locked -p obscura-cdp --lib connection_init_filter_does_not_swallow_user_response_data -- --nocapture
       - name: Check inbound WebSocket frame and message memory budgets
         run: cargo test --locked -p obscura-cdp --lib websocket_config_caps_inbound_frames_and_messages -- --nocapture
       - name: Build local-only unpublished CLI executables
