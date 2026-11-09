@@ -43,6 +43,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **Interception queue policy:** [docs/INTERCEPTION_BACKPRESSURE.md](docs/INTERCEPTION_BACKPRESSURE.md) (bounded Fetch/XHR/document intercepts; fail-closed on saturation or consumer loss)
 - **Interception decision deadline:** [docs/INTERCEPTION_DECISION_DEADLINE.md](docs/INTERCEPTION_DECISION_DEADLINE.md) (60-second shared fail-closed wait for unanswered Fetch/XHR/document decisions)
 - **Render-resource result backpressure:** [docs/RENDER_RESOURCE_BACKPRESSURE.md](docs/RENDER_RESOURCE_BACKPRESSURE.md) (at most 16 queued completed image/font loads per document generation; not an aggregate byte budget)
+- **Render-resource response-size policy:** [docs/RENDER_RESOURCE_BODY_BUDGET.md](docs/RENDER_RESOURCE_BODY_BUDGET.md) (background image/font responses capped at 16 MiB decoded body per fetch)
 - **Paused Fetch decisions:** [docs/CDP_PAUSED_INTERCEPTIONS.md](docs/CDP_PAUSED_INTERCEPTIONS.md) (128 outstanding decisions, duplicate-ID refusal and canceled-request cleanup)
 - **Fetch.enable consumer gate:** [docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md](docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md) (do not enable policy when the receiver is unavailable or closed)
 - **Dependency audit status:** [docs/SUPPLY_CHAIN_REVIEW.md](docs/SUPPLY_CHAIN_REVIEW.md) (locked inventory only; licensing/SBOM review open)
