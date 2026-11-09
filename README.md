@@ -37,6 +37,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **Original upstream README:** [UPSTREAM_README.md](UPSTREAM_README.md)
 - **Integration record:** [docs/IMPORT_PROVENANCE.md](docs/IMPORT_PROVENANCE.md)
 - **CDP admission acceptance:** [docs/CDP_CONNECTION_ADMISSION.md](docs/CDP_CONNECTION_ADMISSION.md) (one-slot refusal, incumbent liveness and recovery; not production DoS acceptance)
+- **CDP upgrade deadline:** [docs/CDP_UPGRADE_DEADLINE.md](docs/CDP_UPGRADE_DEADLINE.md) (5-second incomplete WebSocket handshake timeout, slot recovery)
 - **CDP command backpressure:** [docs/CDP_COMMAND_BACKPRESSURE.md](docs/CDP_COMMAND_BACKPRESSURE.md) (256 incoming queued commands; 16 MiB queued request text)
 - **CDP reply backpressure:** [docs/CDP_REPLY_BACKPRESSURE.md](docs/CDP_REPLY_BACKPRESSURE.md) (512 queued responses/events; 32 MiB queued reply text; process RSS is not fully bounded)
 - **Dependency audit status:** [docs/SUPPLY_CHAIN_REVIEW.md](docs/SUPPLY_CHAIN_REVIEW.md) (locked inventory only; licensing/SBOM review open)

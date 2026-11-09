@@ -1196,6 +1196,13 @@ const HTTP_PEEK_BUF: usize = 4096;
 /// immediately after connecting; only probes and preconnects linger.
 const SILENT_CONNECTION_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Once a request is handed to the WebSocket I/O runtime, its HTTP Upgrade
+/// handshake must finish promptly. Non-GET or malformed request prefixes can
+/// reach tungstenite before the blank line arrives, which otherwise leaves a
+/// reserved CDP connection slot waiting for the remaining request forever.
+const WEBSOCKET_UPGRADE_DEADLINE: std::time::Duration =
+    std::time::Duration::from_secs(5);
+
 /// How often the accept thread re-polls parked connections that have not sent
 /// a request head yet. Also the retry delay on a persistent accept error, so
 /// it cannot become a log flood. Only paid while something is actually
@@ -2558,9 +2565,12 @@ async fn handle_connection_ws(
     stream: TcpStream,
     msg_tx: mpsc::Sender<ServerMessage>,
 ) -> anyhow::Result<()> {
-    let ws_stream = tokio_tungstenite::accept_async_with_config(
-        stream, Some(cdp_websocket_config()),
-    ).await?;
+    let ws_stream = tokio::time::timeout(
+        WEBSOCKET_UPGRADE_DEADLINE,
+        tokio_tungstenite::accept_async_with_config(stream, Some(cdp_websocket_config())),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("CDP WebSocket upgrade deadline exceeded"))??;
     info!("WebSocket connected");
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
@@ -2864,6 +2874,14 @@ mod tests {
         format!(
             "GET /devtools/browser HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
         )
+    }
+
+    #[test]
+    fn websocket_upgrade_deadline_is_bounded_below_silent_connection_ttl() {
+        assert_eq!(super::WEBSOCKET_UPGRADE_DEADLINE.as_secs(), 5);
+        assert!(super::WEBSOCKET_UPGRADE_DEADLINE < super::SILENT_CONNECTION_TTL);
+        assert_eq!(super::MAX_SILENT_PENDING, 256);
+        assert_eq!(super::HTTP_PEEK_BUF, 4096);
     }
 
     #[test]
