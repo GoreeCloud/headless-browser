@@ -112,6 +112,18 @@ fn host_matches_bind(
     let Ok(url) = url::Url::parse(&format!("http://{host_header}/")) else {
         return false;
     };
+    // A Host header is an authority, not an arbitrary URL.  A value such as
+    // "attacker@127.0.0.1:9222" previously passed the bind-IP comparison
+    // even though it contains userinfo. Reject path/query/fragment and
+    // credentials rather than silently treating them as a valid CDP Host.
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
     fn host_matches_ip(url: &url::Url, bind_ip: std::net::IpAddr) -> bool {
         if bind_ip.is_unspecified() {
             return true;
@@ -2635,6 +2647,28 @@ mod tests {
                 None,
             ),
             Some(ControlRefusal::ForeignHost)
+        );
+    }
+
+    #[test]
+    fn rejects_host_header_userinfo_and_url_components() {
+        let bind = "127.0.0.1".parse().unwrap();
+        for malformed in [
+            "attacker@127.0.0.1:9222",
+            "user:pass@127.0.0.1:9222",
+            "127.0.0.1:9222/hidden",
+            "127.0.0.1:9222?query",
+            "127.0.0.1:9222#fragment",
+        ] {
+            assert_eq!(
+                control_refusal(&native_head(malformed), bind, 9222, None, None),
+                Some(ControlRefusal::ForeignHost),
+                "malformed Host authority should be refused: {malformed}",
+            );
+        }
+        assert_eq!(
+            control_refusal(&native_head("127.0.0.1:9222"), bind, 9222, None, None),
+            None,
         );
     }
 
