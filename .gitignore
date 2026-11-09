@@ -1,2 +1,6 @@
 target/
 .DS_Store
+
+# Local Python source-verification tests
+__pycache__/
+*.pyc
