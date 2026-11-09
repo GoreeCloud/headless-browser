@@ -40,6 +40,11 @@ struct PendingRuntimeReply {
 // fails loudly at accept time rather than silently piling up FDs.
 const MAX_PENDING_WS_HANDOFFS: usize = 128;
 
+// Bound *inbound* CDP requests independently of outgoing screenshot/DOM data.
+// Tungstenite's default permits 64 MiB messages. A 16 MiB cap limits
+// per-client parser memory without restricting large outbound CDP responses.
+const MAX_CDP_INBOUND_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+
 // Cap on *live* CDP connections, each of which costs one OS thread and its own
 // V8 isolates. `MAX_PENDING_WS_HANDOFFS` above bounds only the handoff queue —
 // connections that have already been handed off are unbounded without this.
@@ -2390,20 +2395,25 @@ fn fast_path_response(text: &str) -> Option<String> {
     }
 }
 
+fn cdp_websocket_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+    // Disable buffering of small outbound CDP frames to reduce latency; the
+    // outbound buffer budget is separate from the inbound request limit.
+    let mut config = WebSocketConfig::default();
+    config.write_buffer_size = 0;
+    config.max_write_buffer_size = 64 << 20;
+    config.max_message_size = Some(MAX_CDP_INBOUND_MESSAGE_BYTES);
+    config.max_frame_size = Some(MAX_CDP_INBOUND_MESSAGE_BYTES);
+    config
+}
+
 async fn handle_connection_ws(
     stream: TcpStream,
     msg_tx: mpsc::UnboundedSender<ServerMessage>,
 ) -> anyhow::Result<()> {
-    // tokio_tungstenite wraps the stream in a 128 KiB write BufWriter by
-    // default. CDP traffic is many small (~100-byte) frames, and that buffer
-    // adds extra latency per frame. write_buffer_size=0 makes every WS write
-    // hit the socket directly. Combined with set_nodelay(true) above, gets
-    // per-frame latency on localhost down toward ideal.
-    use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
-    let mut cfg = WebSocketConfig::default();
-    cfg.write_buffer_size = 0;
-    cfg.max_write_buffer_size = 64 << 20;
-    let ws_stream = tokio_tungstenite::accept_async_with_config(stream, Some(cfg)).await?;
+    let ws_stream = tokio_tungstenite::accept_async_with_config(
+        stream, Some(cdp_websocket_config()),
+    ).await?;
     info!("WebSocket connected");
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
@@ -2634,6 +2644,16 @@ mod tests {
         format!(
             "GET /devtools/browser HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
         )
+    }
+
+    #[test]
+    fn websocket_config_caps_inbound_frames_and_messages() {
+        let config = super::cdp_websocket_config();
+        assert_eq!(config.max_frame_size, Some(super::MAX_CDP_INBOUND_MESSAGE_BYTES));
+        assert_eq!(config.max_message_size, Some(super::MAX_CDP_INBOUND_MESSAGE_BYTES));
+        assert_eq!(super::MAX_CDP_INBOUND_MESSAGE_BYTES, 16 * 1024 * 1024);
+        assert_eq!(config.write_buffer_size, 0);
+        assert_eq!(config.max_write_buffer_size, 64 << 20);
     }
 
     #[test]
