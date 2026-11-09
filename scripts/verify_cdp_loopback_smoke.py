@@ -52,7 +52,9 @@ def validate_ready(record: object, expected_pid: int) -> int:
 
 
 @contextmanager
-def disposable_cdp_server(name: str, token: str | None = None) -> Iterator[int]:
+def disposable_cdp_server(
+    name: str, token: str | None = None, *, allow_private_network: bool = False
+) -> Iterator[int]:
     binary = ROOT / "target/debug" / name
     if not binary.is_file():
         raise AssertionError(f"CDP binary was not built: {binary}")
@@ -61,7 +63,9 @@ def disposable_cdp_server(name: str, token: str | None = None) -> Iterator[int]:
         ready = Path(directory) / "ready.json"
         proc = subprocess.Popen(
             [
-                str(binary), "serve", "--host", "127.0.0.1",
+                str(binary),
+                *(["--allow-private-network"] if allow_private_network else []),
+                "serve", "--host", "127.0.0.1",
                 "--port", "0", "--workers", "1", "--ready-file", str(ready),
                 "--quiet",
             ],

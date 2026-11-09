@@ -38,3 +38,7 @@ The development CI runner tests four pre-bind failures: an unauthenticated nonlo
 ## CDP about:blank and local-file guard
 
 A disposable CI WebSocket session checks that Target.createTarget rejects a deliberately nonexistent file:// URL by default, opens and attaches to about:blank, runs only the harmless expression 6 * 7 using Runtime.evaluate, and closes the target without leaving an active target listing. No external navigation, real filesystem contents, user data, or arbitrary site scripts are involved. Passing does not prove comprehensive local-file isolation, untrusted JavaScript sandboxing, cross-origin protections, remote egress controls or production CDP readiness.
+
+## Owned-loopback HTML navigation acceptance
+
+Nonpublishing CI serves a fixed HTML fixture bound to an ephemeral 127.0.0.1 port with a deny-all Content Security Policy and no external subresources. The GoreeCloud CDP server is likewise loopback-only. Only this trusted test server launches CDP with explicit `--allow-private-network`; the default private-network deny behavior remains unchanged. The harness structurally validates the full URL authority to reject userinfo or external-host masquerades, checks Page.navigate and DOM/title via controlled Runtime.evaluate, and closes the fixture and CDP session. This is **not** evidence of arbitrary website compatibility, safe browsing of untrusted HTML, comprehensive egress isolation or production deployment readiness.

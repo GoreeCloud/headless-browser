@@ -73,3 +73,5 @@ jobs:
         run: python3 scripts/verify_cdp_startup_security.py
       - name: Verify trusted about-blank CDP page lifecycle and V8 expression
         run: python3 scripts/verify_cdp_js_loopback_smoke.py
+      - name: Navigate owned-loopback HTML and inspect DOM with explicit private-network opt-in
+        run: timeout 90s python3 scripts/verify_cdp_owned_html.py
