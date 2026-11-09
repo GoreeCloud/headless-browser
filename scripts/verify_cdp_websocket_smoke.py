@@ -51,9 +51,12 @@ class BufferedConnection:
     def __init__(self, stream: socket.socket, pending: bytes = b"") -> None:
         self.stream = stream
         self.pending = pending
+        # Callers may raise this *only* for explicitly bounded, owned-fixture
+        # binary CDP replies (PDF). The normal metadata smoke remains 64 KiB.
+        self.max_response_bytes = MAX_PAYLOAD
 
     def read_exact(self, length: int) -> bytes:
-        if length < 0 or length > MAX_PAYLOAD + MAX_HEADER:
+        if length < 0 or length > self.max_response_bytes + MAX_HEADER:
             raise AssertionError("unexpected length requested from WebSocket peer")
         while len(self.pending) < length:
             part = self.stream.recv(max(1, min(length - len(self.pending), 4096)))
@@ -74,8 +77,8 @@ class BufferedConnection:
             length = struct.unpack("!H", self.read_exact(2))[0]
         elif length == 127:
             length = struct.unpack("!Q", self.read_exact(8))[0]
-        if length > MAX_PAYLOAD:
-            raise AssertionError("CDP response exceeded 64 KiB test bound")
+        if length > self.max_response_bytes:
+            raise AssertionError("CDP response exceeded configured test reply budget")
         return first & 0x0F, self.read_exact(length)
 
     def request(
