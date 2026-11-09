@@ -85,13 +85,30 @@ fn constant_time_eq(left: &str, right: &str) -> bool {
         == 0
 }
 
-fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+fn header_count(head: &str, name: &str) -> usize {
     head.split("\r\n")
         .skip(1)
         .take_while(|line| !line.is_empty())
         .filter_map(|line| line.split_once(':'))
-        .find(|(header, _)| header.eq_ignore_ascii_case(name))
-        .map(|(_, value)| value.trim())
+        .filter(|(header, _)| header.eq_ignore_ascii_case(name))
+        .count()
+}
+
+fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    // Duplicate Host and Authorization fields are ambiguous to intermediaries.
+    // Fail closed rather than selecting whichever occurrence came first.
+    let mut values = head.split("\r\n")
+        .skip(1)
+        .take_while(|line| !line.is_empty())
+        .filter_map(|line| line.split_once(':'))
+        .filter(|(header, _)| header.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.trim());
+    let first = values.next()?;
+    if values.next().is_some() {
+        None
+    } else {
+        Some(first)
+    }
 }
 
 fn bearer_authorized(head: &str, expected: Option<&str>) -> bool {
@@ -169,8 +186,14 @@ fn control_refusal(
     forwarded: Option<(std::net::IpAddr, u16)>,
     auth_token: Option<&str>,
 ) -> Option<ControlRefusal> {
-    if header_value(head, "origin").is_some() {
+    // Any Origin is forbidden for the native CDP control plane, including
+    // repeated Origin headers. Do not let duplicate-aware extraction
+    // inadvertently turn two Origins into an apparently absent one.
+    if header_count(head, "origin") != 0 {
         return Some(ControlRefusal::BrowserOrigin);
+    }
+    if header_count(head, "authorization") > 1 {
+        return Some(ControlRefusal::Unauthorized);
     }
     if !header_value(head, "host")
         .is_some_and(|host| host_matches_bind(host, bind_ip, port, forwarded))
@@ -2670,6 +2693,48 @@ mod tests {
             control_refusal(&native_head("127.0.0.1:9222"), bind, 9222, None, None),
             None,
         );
+    }
+
+    #[test]
+    fn rejects_duplicate_sensitive_http_headers() {
+        let bind = "127.0.0.1".parse().unwrap();
+        let base = native_head("127.0.0.1:9222");
+        let twice = base.replace("Connection: Upgrade", "hOsT: malicious.invalid\r\nConnection: Upgrade");
+        assert_eq!(
+            control_refusal(&twice, bind, 9222, None, None),
+            Some(ControlRefusal::ForeignHost),
+        );
+        let both_valid = base.replace("Connection: Upgrade", "Host: 127.0.0.1:9222\r\nConnection: Upgrade");
+        assert_eq!(
+            control_refusal(&both_valid, bind, 9222, None, None),
+            Some(ControlRefusal::ForeignHost),
+        );
+        let with_origin = base.replace(
+            "Connection: Upgrade",
+            "Origin: https://bad.example\r\norigin: https://other.example\r\nConnection: Upgrade",
+        );
+        assert_eq!(
+            control_refusal(&with_origin, bind, 9222, None, None),
+            Some(ControlRefusal::BrowserOrigin),
+        );
+        let token = "01234567890123456789012345678901";
+        let twice_auth = base.replace(
+            "Connection: Upgrade",
+            &format!("Authorization: Bearer {token}\r\nauthorization: Bearer {token}\r\nConnection: Upgrade"),
+        );
+        assert_eq!(
+            control_refusal(&twice_auth, bind, 9222, None, Some(token)),
+            Some(ControlRefusal::Unauthorized),
+        );
+        assert_eq!(
+            control_refusal(&twice_auth, bind, 9222, None, None),
+            Some(ControlRefusal::Unauthorized),
+        );
+        let once_auth = base.replace(
+            "Connection: Upgrade",
+            &format!("Authorization: Bearer {token}\r\nConnection: Upgrade"),
+        );
+        assert_eq!(control_refusal(&once_auth, bind, 9222, None, Some(token)), None);
     }
 
     #[test]
