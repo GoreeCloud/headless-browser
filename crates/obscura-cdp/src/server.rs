@@ -2800,7 +2800,7 @@ mod tests {
             request_id: "fetch-1".into(), page_id: page.clone(), url: "https://example.test/data".into(),
             method: "GET".into(), headers: Default::default(), resource_type: "Fetch".into(), resolver,
         };
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = CdpReplySender::channel();
         let mut paused = HashMap::new();
         super::emit_intercepted_request(intercepted, &ctx, Some((&page, "frame-1", Some("driver".into()))), &tx, &mut paused);
         let driver: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
@@ -2824,7 +2824,7 @@ mod tests {
         let other = ctx.create_page();
         ctx.sessions.insert("driver".into(), navigating.clone());
         ctx.sessions.insert("other-driver".into(), other.clone());
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = CdpReplySender::channel();
         let mut paused = HashMap::new();
         let navigation_id = format!("{navigating}.1");
         let other_id = format!("{other}.1");
