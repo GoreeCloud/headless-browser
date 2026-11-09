@@ -26,7 +26,7 @@ const MAX_DEFERRED_MESSAGES: usize = 256;
 struct PendingRuntimeReply {
     id: u64,
     session_id: Option<String>,
-    reply_tx: mpsc::UnboundedSender<String>,
+    reply_tx: CdpReplySender,
     evaluation: crate::domains::runtime::DeferredEvaluation,
 }
 
@@ -248,11 +248,98 @@ fn refuse_control_connection(mut stream: std::net::TcpStream, refusal: ControlRe
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
 }
+// These are application-level *queued reply* budgets, not total process RSS.
+// Keep screenshot/PDF events possible while preventing a stalled WebSocket
+// reader from allowing the V8 producer to accumulate unlimited response data.
+const MAX_QUEUED_CDP_REPLY_MESSAGES: usize = 512;
+const MAX_QUEUED_CDP_REPLY_BYTES: usize = 32 * 1024 * 1024;
+
+struct QueuedCdpReply {
+    text: String,
+    // Keep both reservations while this message awaits or undergoes socket
+    // writing. Dropping the envelope returns every permit automatically.
+    _bytes: tokio::sync::OwnedSemaphorePermit,
+    _slot: tokio::sync::OwnedSemaphorePermit,
+}
+
+#[derive(Clone)]
+struct CdpReplySender {
+    inner: mpsc::UnboundedSender<QueuedCdpReply>,
+    bytes: Arc<tokio::sync::Semaphore>,
+    slots: Arc<tokio::sync::Semaphore>,
+    overloaded: Arc<AtomicBool>,
+    overload_notify: Arc<Notify>,
+}
+
+struct CdpReplyReceiver {
+    inner: mpsc::UnboundedReceiver<QueuedCdpReply>,
+}
+
+impl CdpReplySender {
+    fn channel() -> (Self, CdpReplyReceiver) {
+        Self::with_limits(MAX_QUEUED_CDP_REPLY_MESSAGES, MAX_QUEUED_CDP_REPLY_BYTES)
+    }
+
+    fn with_limits(max_messages: usize, max_bytes: usize) -> (Self, CdpReplyReceiver) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let outbound = Self {
+            inner: sender,
+            bytes: Arc::new(tokio::sync::Semaphore::new(max_bytes)),
+            slots: Arc::new(tokio::sync::Semaphore::new(max_messages)),
+            overloaded: Arc::new(AtomicBool::new(false)),
+            overload_notify: Arc::new(Notify::new()),
+        };
+        (outbound, CdpReplyReceiver { inner: receiver })
+    }
+
+    fn refuse_overload(&self, original: String) -> Result<(), mpsc::error::SendError<String>> {
+        self.overloaded.store(true, Ordering::Release);
+        self.overload_notify.notify_one();
+        Err(mpsc::error::SendError(original))
+    }
+
+    fn send(&self, text: String) -> Result<(), mpsc::error::SendError<String>> {
+        if self.overloaded.load(Ordering::Acquire) {
+            return Err(mpsc::error::SendError(text));
+        }
+        let Some(bytes) = u32::try_from(text.len()).ok()
+            .and_then(|count| self.bytes.clone().try_acquire_many_owned(count).ok())
+        else {
+            return self.refuse_overload(text);
+        };
+        let Ok(slot) = self.slots.clone().try_acquire_owned() else {
+            return self.refuse_overload(text);
+        };
+        match self.inner.send(QueuedCdpReply { text, _bytes: bytes, _slot: slot }) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(mpsc::error::SendError(error.0.text)),
+        }
+    }
+}
+
+impl CdpReplyReceiver {
+    async fn recv_envelope(&mut self) -> Option<QueuedCdpReply> {
+        self.inner.recv().await
+    }
+
+    // The test harness uses plain strings so it can continue to check the
+    // protocol without constructing a network socket.
+    #[cfg(test)]
+    async fn recv(&mut self) -> Option<String> {
+        self.recv_envelope().await.map(|reply| reply.text)
+    }
+
+    #[cfg(test)]
+    fn try_recv(&mut self) -> Result<String, mpsc::error::TryRecvError> {
+        self.inner.try_recv().map(|reply| reply.text)
+    }
+}
+
 use crate::types::CdpRequest;
 
 struct CdpMessage {
     text: String,
-    reply_tx: mpsc::UnboundedSender<String>,
+    reply_tx: CdpReplySender,
     // Held until processing (including interception/deferred work) completes.
     _queued_bytes: Option<tokio::sync::OwnedSemaphorePermit>,
 }
@@ -260,7 +347,7 @@ struct CdpMessage {
 enum ServerMessage {
     Cdp(CdpMessage),
     NewConnection {
-        reply_tx: mpsc::UnboundedSender<String>,
+        reply_tx: CdpReplySender,
     },
 }
 
@@ -1346,7 +1433,7 @@ async fn cdp_processor(
     // a bounded 30 Hz opportunity on this connection's owning LocalSet.
     let mut screencast_tick = tokio::time::interval(tokio::time::Duration::from_millis(33));
     screencast_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut connection_reply_tx: Option<mpsc::UnboundedSender<String>> = None;
+    let mut connection_reply_tx: Option<CdpReplySender> = None;
     // A real browser renderer continues servicing timers, networking, posted
     // tasks, and animation callbacks while its DevTools client is silent. Keep
     // one wake-driven deno_core turn armed after work may have been scheduled;
@@ -1580,7 +1667,7 @@ fn emit_intercepted_request(
     intercepted: obscura_js::ops::InterceptedRequest,
     ctx: &CdpContext,
     navigating_page: Option<(&str, &str, Option<String>)>,
-    reply_tx: &mpsc::UnboundedSender<String>,
+    reply_tx: &CdpReplySender,
     intercepted_paused: &mut HashMap<String, PausedIntercept>,
 ) {
     // Navigation temporarily removes its Page from ctx. Other pages can still
@@ -1607,7 +1694,7 @@ fn emit_routed_intercepted_request(
     route: Option<(&str, Option<String>)>,
     loader: Option<&str>,
     observers: &[String],
-    reply_tx: &mpsc::UnboundedSender<String>,
+    reply_tx: &CdpReplySender,
     intercepted_paused: &mut HashMap<String, PausedIntercept>,
 ) {
     let Some((frame_id, session_id)) = route else {
@@ -1806,7 +1893,7 @@ fn take_live_pending_navigation(
 
 fn forward_pending_events(
     ctx: &mut CdpContext,
-    reply_tx: Option<&mpsc::UnboundedSender<String>>,
+    reply_tx: Option<&CdpReplySender>,
 ) {
     let Some(reply_tx) = reply_tx else {
         return;
@@ -1832,7 +1919,7 @@ fn has_active_screencast(ctx: &CdpContext) -> bool {
 
 async fn pump_and_forward_screencast_frames(
     ctx: &mut CdpContext,
-    reply_tx: Option<&mpsc::UnboundedSender<String>>,
+    reply_tx: Option<&CdpReplySender>,
 ) {
     #[cfg(feature = "render")]
     crate::domains::page::pump_screencast_frames(ctx).await;
@@ -1874,7 +1961,7 @@ pub(crate) fn parse_cdp_headers(params: &serde_json::Value) -> Option<HashMap<St
 
 fn handle_fetch_resolution(
     text: &str,
-    reply_tx: &mpsc::UnboundedSender<String>,
+    reply_tx: &CdpReplySender,
     intercepted_paused: &mut HashMap<String, PausedIntercept>,
 ) -> bool {
     if let Ok(req) = serde_json::from_str::<CdpRequest>(text) {
@@ -1977,7 +2064,7 @@ fn handle_fetch_resolution(
 async fn process_with_interception(
     text: &str,
     ctx: &mut CdpContext,
-    reply_tx: &mpsc::UnboundedSender<String>,
+    reply_tx: &CdpReplySender,
     rx: &mut mpsc::Receiver<ServerMessage>,
     intercept_rx: &mut Option<mpsc::UnboundedReceiver<obscura_js::ops::InterceptedRequest>>,
     intercepted_paused: &mut HashMap<String, PausedIntercept>,
@@ -2311,7 +2398,7 @@ async fn process_with_interception(
 async fn process_cdp_message(
     text: &str,
     ctx: &mut CdpContext,
-    reply_tx: &mpsc::UnboundedSender<String>,
+    reply_tx: &CdpReplySender,
 ) {
     process_cdp_message_with_pending(text, ctx, reply_tx, None).await;
 }
@@ -2319,7 +2406,7 @@ async fn process_cdp_message(
 async fn process_cdp_message_with_pending(
     text: &str,
     ctx: &mut CdpContext,
-    reply_tx: &mpsc::UnboundedSender<String>,
+    reply_tx: &CdpReplySender,
     pending_runtime: Option<&mut Vec<PendingRuntimeReply>>,
 ) {
     let req: CdpRequest = match serde_json::from_str(text) {
@@ -2487,13 +2574,13 @@ async fn handle_connection_ws(
     info!("WebSocket connected");
     let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
-    let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<String>();
+    let (reply_tx, mut reply_rx) = CdpReplySender::channel();
 
     msg_tx.send(ServerMessage::NewConnection {
         reply_tx: reply_tx.clone(),
     }).await.map_err(|_| anyhow::anyhow!("CDP command processor unavailable"))?;
-    if let Some(init_msg) = reply_rx.recv().await {
-        tracing::debug!("Connection init: {}", &init_msg[..init_msg.len().min(100)]);
+    if let Some(init_msg) = reply_rx.recv_envelope().await {
+        tracing::debug!("Connection init: {}", &init_msg.text[..init_msg.text.len().min(100)]);
     }
 
     // Browser.close is the final protocol command for this connection.
@@ -2503,23 +2590,47 @@ async fn handle_connection_ws(
     // the response and sends the WebSocket close frame.
     let (close_reply_tx, mut close_reply_rx) = tokio::sync::oneshot::channel::<String>();
     let mut close_reply_tx = Some(close_reply_tx);
+    let outgoing_overloaded = reply_tx.overloaded.clone();
+    let outgoing_notify = reply_tx.overload_notify.clone();
     let mut send_task = tokio::task::spawn_local(async move {
         loop {
+            if outgoing_overloaded.load(Ordering::Acquire) {
+                warn!("CDP outgoing response queue exhausted; closing client");
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(2), ws_sender.close(),
+                ).await;
+                break;
+            }
             tokio::select! {
                 biased;
+                _ = outgoing_notify.notified() => {
+                    warn!("CDP outgoing response queue exhausted; closing client");
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(2), ws_sender.close(),
+                    ).await;
+                    break;
+                }
                 closing = &mut close_reply_rx => {
                     if let Ok(response) = closing {
                         if ws_sender.send(Message::Text(response.into())).await.is_ok() {
-                            let _ = ws_sender.close().await;
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(2), ws_sender.close(),
+                            ).await;
                         }
                     }
                     break;
                 }
-                reply = reply_rx.recv() => {
+                reply = reply_rx.recv_envelope() => {
                     match reply {
-                        Some(msg) if is_connection_init_message(&msg) => continue,
-                        Some(msg) => {
-                            if ws_sender.send(Message::Text(msg.into())).await.is_err() {
+                        Some(msg) if is_connection_init_message(&msg.text) => continue,
+                        Some(QueuedCdpReply { text, _bytes, _slot }) => {
+                            // Hold both permits until the socket write finishes
+                            // or is canceled; avoid cloning large screenshot data.
+                            if tokio::time::timeout(
+                                std::time::Duration::from_secs(5),
+                                ws_sender.send(Message::Text(text.into())),
+                            ).await.map_or(true, |result| result.is_err()) {
+                                warn!("CDP outbound WebSocket write failed or stalled");
                                 break;
                             }
                         }
@@ -2638,7 +2749,7 @@ mod tests {
     use super::{
         bearer_authorized, control_refusal, handle_fetch_resolution, is_navigate_method,
         merge_cookie_delta, parse_cdp_headers, pump_live_page_event_loop,
-        websocket_authority, ControlRefusal,
+        websocket_authority, ControlRefusal, CdpReplySender,
     };
     #[cfg(feature = "render")]
     use super::pump_and_forward_screencast_frames;
@@ -2699,7 +2810,7 @@ mod tests {
             request_id: "fetch-1".into(), page_id: page.clone(), url: "https://example.test/data".into(),
             method: "GET".into(), headers: Default::default(), resource_type: "Fetch".into(), resolver,
         };
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = CdpReplySender::channel();
         let mut paused = HashMap::new();
         super::emit_intercepted_request(intercepted, &ctx, Some((&page, "frame-1", Some("driver".into()))), &tx, &mut paused);
         let driver: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
@@ -2723,7 +2834,7 @@ mod tests {
         let other = ctx.create_page();
         ctx.sessions.insert("driver".into(), navigating.clone());
         ctx.sessions.insert("other-driver".into(), other.clone());
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, mut rx) = CdpReplySender::channel();
         let mut paused = HashMap::new();
         let navigation_id = format!("{navigating}.1");
         let other_id = format!("{other}.1");
@@ -2848,9 +2959,54 @@ mod tests {
     }
 
     #[test]
+    fn cdp_outgoing_reply_budget_releases_bytes_and_count_after_dequeue() {
+        let (sender, mut receiver) = CdpReplySender::with_limits(2, 10);
+        sender.send("one".into()).unwrap();
+        sender.send("two".into()).unwrap();
+        assert_eq!(sender.bytes.available_permits(), 4);
+        assert_eq!(sender.slots.available_permits(), 0);
+        assert_eq!(receiver.try_recv().unwrap(), "one");
+        assert_eq!(sender.bytes.available_permits(), 7);
+        assert_eq!(sender.slots.available_permits(), 1);
+        sender.send("three".into()).expect("released capacity should be reusable");
+        assert_eq!(receiver.try_recv().unwrap(), "two");
+        assert_eq!(receiver.try_recv().unwrap(), "three");
+        assert_eq!(sender.bytes.available_permits(), 10);
+        assert_eq!(sender.slots.available_permits(), 2);
+        assert!(!sender.overloaded.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn cdp_outgoing_message_overflow_is_sticky_across_sender_clones() {
+        let (sender, mut receiver) = CdpReplySender::with_limits(1, 16);
+        let clone = sender.clone();
+        sender.send("first".into()).expect("first reply fits");
+        assert!(clone.send("second".into()).is_err());
+        assert!(sender.overloaded.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(receiver.try_recv().unwrap(), "first");
+        assert!(sender.send("third".into()).is_err(), "overloaded client must fail closed");
+        // Refusing one client must not poison other clients or listeners.
+        let (other_sender, mut other_receiver) = CdpReplySender::with_limits(1, 16);
+        other_sender.send("healthy".into()).expect("unrelated client still usable");
+        assert_eq!(other_receiver.try_recv().unwrap(), "healthy");
+    }
+
+    #[test]
+    fn cdp_outgoing_byte_overflow_refuses_even_if_message_slots_remain() {
+        let (sender, mut receiver) = CdpReplySender::with_limits(4, 8);
+        sender.send("1234567".into()).expect("initial 7 bytes");
+        assert_eq!(sender.slots.available_permits(), 3);
+        assert!(sender.send("89".into()).is_err(), "queued text byte cap");
+        assert_eq!(receiver.try_recv().unwrap(), "1234567");
+        assert!(sender.send("a".into()).is_err(), "overload must remain sticky");
+        let (large, _receiver) = CdpReplySender::with_limits(1, 2);
+        assert!(large.send("oversized".into()).is_err(), "one oversized response must be refused");
+    }
+
+    #[test]
     fn cdp_inbound_byte_budget_is_held_until_command_drops() {
         let budget = std::sync::Arc::new(tokio::sync::Semaphore::new(super::MAX_QUEUED_CDP_BYTES));
-        let (reply_tx, _reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (reply_tx, _reply_rx) = CdpReplySender::channel();
         let queued = super::CdpMessage {
             text: "owned".to_owned(),
             reply_tx,
@@ -2876,7 +3032,7 @@ mod tests {
     fn cdp_inbound_message_channel_refuses_over_capacity() {
         let (sender, _receiver) =
             tokio::sync::mpsc::channel::<super::ServerMessage>(super::MAX_PENDING_CDP_MESSAGES);
-        let (reply_tx, _reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (reply_tx, _reply_rx) = CdpReplySender::channel();
         for _ in 0..super::MAX_PENDING_CDP_MESSAGES {
             assert!(sender.try_send(super::ServerMessage::NewConnection {
                 reply_tx: reply_tx.clone(),
@@ -3364,7 +3520,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let (server_tx, server_rx) = tokio::sync::mpsc::channel(4096);
-                let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (reply_tx, mut reply_rx) = CdpReplySender::channel();
                 let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
                 let default_context = crate::dispatch::CdpContext::new().default_context;
                 let processor = tokio::task::spawn_local(super::cdp_processor(
@@ -3502,7 +3658,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let (server_tx, server_rx) = tokio::sync::mpsc::channel(4096);
-                let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel();
+                let (reply_tx, mut reply_rx) = CdpReplySender::channel();
                 let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
                 let default_context = crate::dispatch::CdpContext::new().default_context;
                 let processor = tokio::task::spawn_local(super::cdp_processor(
@@ -3666,7 +3822,7 @@ mod tests {
                 &mut ctx, &session).await.unwrap();
             ctx.pending_events.clear();
 
-            let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (reply_tx, mut reply_rx) = CdpReplySender::channel();
             let (_server_tx, mut server_rx) = tokio::sync::mpsc::channel(4096);
             let mut intercept_rx = None;
             let mut paused = HashMap::new();
@@ -3700,7 +3856,7 @@ mod tests {
         std::env::set_var("OBSCURA_ALLOW_PRIVATE_NETWORK", "1");
         tokio::task::LocalSet::new().run_until(async {
             let (server_tx, server_rx) = tokio::sync::mpsc::channel(4096);
-            let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (reply_tx, mut reply_rx) = CdpReplySender::channel();
             let context = crate::dispatch::CdpContext::new().default_context;
             let processor = tokio::task::spawn_local(super::cdp_processor(
                 server_rx, context, std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -3798,7 +3954,7 @@ mod tests {
         use tokio::sync::mpsc;
         tokio::task::LocalSet::new().run_until(async {
             let (server_tx, server_rx) = mpsc::channel(4096);
-            let (reply_tx, mut reply_rx) = mpsc::unbounded_channel();
+            let (reply_tx, mut reply_rx) = CdpReplySender::channel();
             let processor = tokio::task::spawn_local(cdp_processor(
                 server_rx, CdpContext::new().default_context,
                 std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -3891,7 +4047,7 @@ mod tests {
         std::env::set_var("OBSCURA_ALLOW_PRIVATE_NETWORK", "1");
         tokio::task::LocalSet::new().run_until(async {
             let (server_tx, server_rx) = mpsc::channel(4096);
-            let (reply_tx, mut reply_rx) = mpsc::unbounded_channel();
+            let (reply_tx, mut reply_rx) = CdpReplySender::channel();
             let context = CdpContext::new().default_context;
             let processor = tokio::task::spawn_local(cdp_processor(
                 server_rx, context, std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -3984,7 +4140,7 @@ mod tests {
         std::env::set_var("OBSCURA_ALLOW_PRIVATE_NETWORK", "1");
         tokio::task::LocalSet::new().run_until(async {
             let (server_tx, server_rx) = tokio::sync::mpsc::channel(4096);
-            let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (reply_tx, mut reply_rx) = CdpReplySender::channel();
             let context = crate::dispatch::CdpContext::new().default_context;
             let processor = tokio::task::spawn_local(super::cdp_processor(
                 server_rx, context, std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -4147,7 +4303,7 @@ mod tests {
             let session_id = format!("{page_id}-session");
             ctx.sessions.insert(session_id.clone(), page_id.clone());
             let (server_tx, mut server_rx) = tokio::sync::mpsc::channel(4096);
-            let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (reply_tx, mut reply_rx) = CdpReplySender::channel();
             let (intercept_tx, intercept_rx) = tokio::sync::mpsc::unbounded_channel();
             ctx.intercept_tx = Some(intercept_tx.clone());
             let command = json!({"id": 1, "method": "Page.navigate", "sessionId": session_id,
@@ -4310,7 +4466,7 @@ mod tests {
             ctx.get_page_mut(&page_id).unwrap().resume_js();
             let original_url = ctx.pages[0].url_string();
             let (server_tx, mut server_rx) = tokio::sync::mpsc::channel(4096);
-            let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (reply_tx, mut reply_rx) = CdpReplySender::channel();
             let navigation_reply = reply_tx.clone();
             let url = format!("http://{address}/");
             let command = json!({"id": 1, "method": "Page.navigate", "sessionId": session,
@@ -4384,7 +4540,7 @@ mod tests {
             ctx.sessions.insert(session.clone(), page_id.clone());
             let mut intercept_rx = Some(ctx.get_page_mut(&page_id).unwrap().enable_interception());
             let (server_tx, mut server_rx) = tokio::sync::mpsc::channel(4096);
-            let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let (reply_tx, mut reply_rx) = CdpReplySender::channel();
             let (done_tx, mut done_rx) = tokio::sync::oneshot::channel();
             let command = json!({"id": 1, "method": "Page.navigate", "sessionId": session,
                 "params": {"url": url}}).to_string();
@@ -4497,7 +4653,7 @@ mod tests {
             ctx.sessions.insert(session.clone(), page_id.clone());
             let mut intercept_rx = Some(ctx.get_page_mut(&page_id).unwrap().enable_interception());
             let (server_tx, mut server_rx) = tokio::sync::mpsc::channel(4096);
-            let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+            let (reply_tx, mut reply_rx) = CdpReplySender::channel();
             let command = json!({"id": 1, "method": "Page.navigate", "sessionId": session,
                 "params": {"url": "http://127.0.0.1:9/paused"}}).to_string();
             let mut paused = HashMap::new();
@@ -4565,7 +4721,7 @@ mod tests {
     fn fetch_resolution_is_handled_once_by_the_outer_processor() {
         let (resolution_tx, mut resolution_rx) = tokio::sync::oneshot::channel();
         let mut paused = HashMap::from([("request-1".to_string(), super::PausedIntercept {resolver: resolution_tx, main_document: false})]);
-        let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (reply_tx, mut reply_rx) = CdpReplySender::channel();
         assert!(!handle_fetch_resolution(
             r#"{"id":16,"method":"Network.getResponseBody","params":{"requestId":"request-1"}}"#,
             &reply_tx,
@@ -4718,7 +4874,7 @@ mod tests {
     fn continue_request_decodes_a_base64_post_data() {
         let (resolution_tx, mut resolution_rx) = tokio::sync::oneshot::channel();
         let mut paused = HashMap::from([("request-1".to_string(), super::PausedIntercept {resolver: resolution_tx, main_document: false})]);
-        let (reply_tx, _reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (reply_tx, _reply_rx) = CdpReplySender::channel();
 
         // base64 of {"a":1}
         assert!(handle_fetch_resolution(
@@ -4744,7 +4900,7 @@ mod tests {
     fn continue_request_keeps_a_non_utf8_post_data_intact() {
         let (resolution_tx, mut resolution_rx) = tokio::sync::oneshot::channel();
         let mut paused = HashMap::from([("request-1".to_string(), super::PausedIntercept {resolver: resolution_tx, main_document: false})]);
-        let (reply_tx, _reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (reply_tx, _reply_rx) = CdpReplySender::channel();
 
         // base64 of the three bytes 00 FF FE, which are not valid UTF-8
         assert!(handle_fetch_resolution(
@@ -4770,7 +4926,7 @@ mod tests {
     fn continue_request_rejects_post_data_that_is_not_base64_without_wedging_it() {
         let (resolution_tx, mut resolution_rx) = tokio::sync::oneshot::channel();
         let mut paused = HashMap::from([("request-1".to_string(), super::PausedIntercept {resolver: resolution_tx, main_document: false})]);
-        let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (reply_tx, mut reply_rx) = CdpReplySender::channel();
 
         assert!(handle_fetch_resolution(
             r#"{"id":9,"method":"Fetch.continueRequest","params":{"requestId":"request-1","postData":"!!!not-base64"}}"#,
@@ -4816,7 +4972,7 @@ mod tests {
     fn fulfill_request_preserves_repeated_set_cookie_headers() {
         let (tx, mut rx) = tokio::sync::oneshot::channel();
         let mut paused = HashMap::from([("document-1".into(), super::PausedIntercept { resolver: tx, main_document: true })]);
-        let (reply_tx, _) = tokio::sync::mpsc::unbounded_channel();
+        let (reply_tx, _) = CdpReplySender::channel();
         assert!(handle_fetch_resolution(r#"{"id":1,"method":"Fetch.fulfillRequest","params":{"requestId":"document-1","responseCode":200,"responseHeaders":[{"name":"Set-Cookie","value":"first=1; Path=/"},{"name":"Set-Cookie","value":"second=2; Path=/"},{"name":"set-cookie","value":"third=3; Path=/"},{"name":"Content-Type","value":"text/html"}]}}"#,
             &reply_tx, &mut paused));
         let Ok(obscura_js::ops::InterceptResolution::Fulfill { headers, .. }) = rx.try_recv() else {
@@ -4830,7 +4986,7 @@ mod tests {
     fn fulfill_request_rejects_a_body_that_is_not_base64() {
         let (resolution_tx, _resolution_rx) = tokio::sync::oneshot::channel();
         let mut paused = HashMap::from([("request-1".to_string(), super::PausedIntercept {resolver: resolution_tx, main_document: false})]);
-        let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (reply_tx, mut reply_rx) = CdpReplySender::channel();
 
         assert!(handle_fetch_resolution(
             r#"{"id":11,"method":"Fetch.fulfillRequest","params":{"requestId":"request-1","responseCode":200,"body":"<html>"}}"#,
@@ -4855,7 +5011,7 @@ mod tests {
         for value in [json!(null), json!(42), json!("AA="), json!("AB=="), json!("====")] {
             let (tx, mut rx) = tokio::sync::oneshot::channel();
             let mut paused = HashMap::from([("request-1".to_string(), super::PausedIntercept { resolver: tx, main_document: false })]);
-            let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (reply_tx, mut reply_rx) = CdpReplySender::channel();
             let command = json!({"id": 1, "method": "Fetch.continueRequest",
                 "params": {"requestId": "request-1", "postData": value}}).to_string();
             assert!(handle_fetch_resolution(&command, &reply_tx, &mut paused));
@@ -4878,7 +5034,7 @@ mod tests {
     fn continue_request_without_post_data_leaves_the_body_alone() {
         let (resolution_tx, mut resolution_rx) = tokio::sync::oneshot::channel();
         let mut paused = HashMap::from([("request-1".to_string(), super::PausedIntercept {resolver: resolution_tx, main_document: false})]);
-        let (reply_tx, _reply_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let (reply_tx, _reply_rx) = CdpReplySender::channel();
 
         assert!(handle_fetch_resolution(
             r#"{"id":1,"method":"Fetch.continueRequest","params":{"requestId":"request-1"}}"#,
@@ -4931,7 +5087,7 @@ mod tests {
             .expect("initial stream id");
         ctx.pending_events.clear();
 
-        let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (reply_tx, mut reply_rx) = CdpReplySender::channel();
         ctx.get_session_page_mut(&session)
             .expect("page")
             .evaluate(
