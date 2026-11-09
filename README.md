@@ -45,6 +45,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **Fetch.enable consumer gate:** [docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md](docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md) (do not enable policy when the receiver is unavailable or closed)
 - **Dependency audit status:** [docs/SUPPLY_CHAIN_REVIEW.md](docs/SUPPLY_CHAIN_REVIEW.md) (locked inventory only; licensing/SBOM review open)
 - **Imported graphics rights:** [docs/IMPORTED_ASSET_RIGHTS.md](docs/IMPORTED_ASSET_RIGHTS.md) (upstream provenance verified; sponsor/brand use unapproved)
+- **GoreeShield log minimization:** [docs/LOG_DATA_MINIMIZATION.md](docs/LOG_DATA_MINIMIZATION.md) (targeted URL, request-ID and cookie-path redaction; full log audit open)
 - **Upstream feature documentation:** [docs/README.md](docs/README.md)
 
 GoreeCloud Headless Browser is independently maintained. It is **not an official Obscura distribution** and has no implied affiliation or endorsement. The original Obscura project name remains in technical code, inherited APIs, and historical attribution where appropriate.

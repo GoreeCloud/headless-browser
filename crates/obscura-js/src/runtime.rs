@@ -2472,9 +2472,8 @@ impl ObscuraJsRuntime {
             deno_core::futures::pin_mut!(loads);
             while let Some(load) = loads.next().await {
                 tracing::debug!(
-                    url = %load.url,
                     ok = load.response.is_some(),
-                    "render resource load finished"
+                    "render resource load finished (URL redacted)"
                 );
                 if tx.send(load).is_err() {
                     break;
@@ -2546,7 +2545,7 @@ impl ObscuraJsRuntime {
             if load.generation != generation {
                 // A previous document's response: no seed, no event, and it
                 // must not clear a same-URL request of the current document.
-                tracing::debug!(url = %load.url, "discarded render resource load of a retired document");
+                tracing::debug!("Discarded retired document resource load (URL redacted)");
                 continue;
             }
             self.state.borrow_mut().render_resource_in_flight.remove(&(
@@ -2562,7 +2561,7 @@ impl ObscuraJsRuntime {
                 }
                 _ => None,
             };
-            tracing::debug!(url = %load.url, loaded = bytes.is_some(), "applied render resource load");
+            tracing::debug!(loaded = bytes.is_some(), "Applied render resource load (URL redacted)");
             match load.profile {
                 Some(profile) => self.seed_shared_render_image_resource(load.url, profile, bytes),
                 None => self.seed_shared_render_resource(load.url, bytes),

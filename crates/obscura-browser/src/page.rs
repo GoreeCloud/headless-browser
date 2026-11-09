@@ -1245,8 +1245,7 @@ impl Page {
             let cap = max_live_frames();
             if self.frames.len() >= cap {
                 tracing::warn!(
-                    "refusing a realm for frame {}: already at the {} live frame cap",
-                    frame.url,
+                    "Refusing frame realm: {} live-frame cap reached (URL redacted)",
                     cap,
                 );
                 self.forget_frame_references(frame.frame_id, frame.parent_frame_id);
@@ -1257,7 +1256,7 @@ impl Page {
             }) {
                 Some(realm) => realm,
                 None => {
-                    tracing::warn!("could not build a realm for frame {}", frame.url);
+                    tracing::warn!("Could not build realm for frame (URL redacted)");
                     self.forget_frame_references(frame.frame_id, frame.parent_frame_id);
                     return true;
                 }
@@ -1275,7 +1274,7 @@ impl Page {
                     frame.viewport_width as f64,
                     frame.viewport_height as f64,
                 ) {
-                    tracing::debug!("frame {} viewport setup failed: {error}", frame.url);
+                    tracing::debug!("Frame viewport setup failed (URL redacted): {error}");
                 }
                 // New-document scripts must be installed before the published
                 // child context can be observed, including while its external
@@ -1283,7 +1282,7 @@ impl Page {
                 if frame.url != "about:blank" {
                     for source in &self.preload_scripts {
                         if let Err(error) = realm.execute_script(js, source) {
-                            tracing::debug!("frame {} preload failed: {error}", frame.url);
+                            tracing::debug!("Frame preload failed (URL redacted): {error}");
                         }
                     }
                     if !self.preload_scripts.is_empty() {
@@ -1326,7 +1325,7 @@ impl Page {
                 match self.do_fetch(&parsed).await {
                     Ok(response) => Some(String::from_utf8_lossy(&response.body).into_owned()),
                     Err(error) => {
-                        tracing::warn!("frame script {} failed: {}", url, error);
+                        tracing::warn!("Frame script failed (URL redacted): {}", error);
                         None
                     }
                 }
@@ -1381,10 +1380,10 @@ impl Page {
                 for problem in self.frames[index]
                     .run_document_scripts(js, |url| sources.get(url).cloned())
                 {
-                    tracing::debug!("frame {}: {}", frame_url, problem);
+                    tracing::debug!("Frame problem (URL redacted): {}", problem);
                 }
                 if let Err(error) = self.frames[index].dispatch_load_events(js) {
-                    tracing::debug!("frame {} load events failed: {error}", frame_url);
+                    tracing::debug!("Frame load events failed (URL redacted): {error}");
                 }
             }
             self.execute_frame_owner_script(parent_frame_id, &format!(
@@ -2182,7 +2181,7 @@ impl Page {
                 let response = match result {
                     Ok(response) => response,
                     Err(error) => {
-                        tracing::debug!("Failed to fetch stylesheet {}: {}", requested_url, error);
+                        tracing::debug!("Failed to fetch stylesheet (URL redacted): {}", error);
                         continue;
                     }
                 };
@@ -2241,7 +2240,7 @@ impl Page {
                     if !subresource_allowed(Some(&document_url), import_url.as_str())
                         || self.should_block_url(import_url.as_str())
                     {
-                        tracing::info!("Blocked stylesheet import: {}", import_url);
+                        tracing::info!("Blocked stylesheet import (URL redacted)");
                         continue;
                     }
                     scheduled.insert(import_key.clone());
@@ -2544,15 +2543,11 @@ impl Page {
                     // <script src>. Without this an http page can
                     // include <script src="file:///etc/passwd"> and
                     // see the body parsed as JS source.
-                    tracing::warn!(
-                        "blocking cross-scheme <script src>: page={} src={}",
-                        self.url_string(),
-                        full_url,
-                    );
+                    tracing::warn!("Blocking cross-scheme script source (page and source URLs redacted)");
                     continue;
                 }
                 if self.should_block_url(&full_url) {
-                    tracing::info!("Blocked script by interception: {}", full_url);
+                    tracing::info!("Blocked script by interception (URL redacted)");
                     continue;
                 }
                 fetch_tasks.push((i, full_url));
@@ -2607,7 +2602,7 @@ impl Page {
                     {
                         Ok(resp) => Some((idx, url, resp)),
                         Err(e) => {
-                            tracing::warn!("Failed to fetch script {}: {}", url, e);
+                            tracing::warn!("Failed to fetch script (URL redacted): {}", e);
                             None
                         }
                     }
@@ -2652,8 +2647,7 @@ impl Page {
                         false,
                     );
                     tracing::warn!(
-                        "Refusing to execute script {} after HTTP {}",
-                        url,
+                        "Refusing to execute script (URL redacted) after HTTP {}",
                         resp.status
                     );
                     continue;
@@ -2782,7 +2776,7 @@ impl Page {
              fetched_script: Option<(String, String, obscura_net::Response)>| {
                 if script.src.is_some() {
                     if let Some((url, code, resp)) = fetched_script {
-                        tracing::info!("Executing script ({} bytes): {}", code.len(), url);
+                        tracing::info!("Executing script ({} bytes; source URL redacted)", code.len());
                         let execution_url = resp.url.to_string();
                         page.record_network_event_with_body(
                             &url,
@@ -2799,7 +2793,7 @@ impl Page {
                                 &format!("globalThis.__currentScriptNid={};", script.nid),
                             );
                             if let Err(error) = js.execute_script_guarded(&execution_url, &code) {
-                                tracing::warn!("Script error ({}): {}", execution_url, error);
+                                tracing::warn!("Script error (URL redacted): {}", error);
                             }
                             let _ = js.execute_script(
                                 "<current-script>",
@@ -2890,14 +2884,14 @@ impl Page {
                                 .map(|url| url.to_string())
                                 .unwrap_or_else(|| src.clone())
                         };
-                        tracing::info!("Preparing ES module graph: {}", full_url);
+                        tracing::info!("Preparing ES module graph (URL redacted)");
                         let result = match &mut self.js {
                             Some(js) => js.prepare_module(&full_url, prepare_budget_ms).await,
                             None => continue,
                         };
                         tracing::debug!(
                             phase = "module-graph",
-                            module = %full_url,
+                            module = "<redacted>",
                             elapsed_ms = prepare_started.elapsed().as_millis(),
                             budget_ms = prepare_budget_ms,
                             success = result.is_ok(),
@@ -2906,7 +2900,7 @@ impl Page {
                         match result {
                             Ok(prepared) => (prepared, Some(full_url)),
                             Err(error) => {
-                                tracing::warn!("ES module error ({}): {}", full_url, error);
+                                tracing::warn!("ES module error (URL redacted): {}", error);
                                 continue;
                             }
                         }
@@ -2970,7 +2964,7 @@ impl Page {
                         let Some(evaluation_budget_ms) = evaluation_budget_ms(remaining_active_ms)
                         else {
                             tracing::warn!(
-                                module = url.as_deref().unwrap_or("<inline>"),
+                                module = "<redacted>",
                                 graph_elapsed_ms,
                                 queue_wait_ms = queued_at.elapsed().as_millis(),
                                 "ES module exhausted the page budget before evaluation",
@@ -2988,7 +2982,7 @@ impl Page {
                         };
                         tracing::debug!(
                             phase = "module-evaluation",
-                            module = url.as_deref().unwrap_or("<inline>"),
+                            module = "<redacted>",
                             elapsed_ms = evaluation_started.elapsed().as_millis(),
                             graph_elapsed_ms,
                             queue_wait_ms,
@@ -3000,7 +2994,7 @@ impl Page {
                         if let Err(error) = result {
                             tracing::warn!("ES module evaluation error: {}", error);
                         } else if let Some(url) = url {
-                            tracing::info!("ES module loaded: {}", url);
+                            tracing::info!("ES module loaded (URL redacted)");
                         }
                     } else {
                         post_parse.push(scheduled);
@@ -3050,7 +3044,7 @@ impl Page {
                     let Some(evaluation_budget_ms) = evaluation_budget_ms(remaining_active_ms)
                     else {
                         tracing::warn!(
-                            module = url.as_deref().unwrap_or("<inline>"),
+                            module = "<redacted>",
                             graph_elapsed_ms,
                             queue_wait_ms = queued_at.elapsed().as_millis(),
                             "ES module exhausted the page budget before post-parse evaluation",
@@ -3068,7 +3062,7 @@ impl Page {
                     };
                     tracing::debug!(
                         phase = "module-evaluation",
-                        module = url.as_deref().unwrap_or("<inline>"),
+                        module = "<redacted>",
                         elapsed_ms = evaluation_started.elapsed().as_millis(),
                         graph_elapsed_ms,
                         queue_wait_ms,
@@ -3080,7 +3074,7 @@ impl Page {
                     if let Err(error) = result {
                         tracing::warn!("ES module evaluation error: {}", error);
                     } else if let Some(url) = url {
-                        tracing::info!("ES module loaded: {}", url);
+                        tracing::info!("ES module loaded (URL redacted)");
                     }
                 }
             }

@@ -1524,7 +1524,7 @@ impl ObscuraHttpClient {
         if self.block_trackers {
             if let Some(host) = url.host_str() {
                 if crate::blocklist::is_blocked(host) {
-                    tracing::debug!("Blocked tracker: {}", url);
+                    tracing::debug!("Tracker blocked (URL redacted)");
                     return Ok(Response {
                         status: 0,
                         url: url.clone(),
