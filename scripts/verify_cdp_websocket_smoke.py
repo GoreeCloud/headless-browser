@@ -190,6 +190,11 @@ def verify_browser_metadata(peer: BufferedConnection) -> None:
     if not isinstance(targets.get("targetInfos"), list):
         raise AssertionError("CDP WebSocket Target.getTargets did not return an array")
 
+    # A harmless parameter string must not be mistaken for a real shutdown.
+    peer.request(3, "Network.enable", params={"note": "Browser.close"})
+    if peer.request(4, "Browser.getVersion").get("protocolVersion") != "1.3":
+        raise AssertionError("CDP session was closed by non-close parameter")
+
 
 def main() -> None:
     with disposable_cdp_server("goreecloud-headless-browser") as port:

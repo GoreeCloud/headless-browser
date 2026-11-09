@@ -13,6 +13,7 @@ class FixturePeer:
             11: {"targetId": "page-test"},
             12: {"sessionId": "page-session"},
             13: {"result": {"type": "number", "value": 42}},
+            16: {"result": {"type": "object", "value": {"__init": True, "note": "Browser.close"}}},
             14: {"success": True},
             15: {"targetInfos": []},
         }
@@ -31,6 +32,7 @@ class BlankPageSmokeTests(unittest.TestCase):
             "Target.createTarget",
             "Target.createTarget",
             "Target.attachToTarget",
+            "Runtime.evaluate",
             "Runtime.evaluate",
             "Target.closeTarget",
             "Target.getTargets",
@@ -60,6 +62,10 @@ class BlankPageSmokeTests(unittest.TestCase):
     def test_runtime_must_report_number_type(self):
         with self.assertRaisesRegex(AssertionError, "numeric result"):
             check_trusted_blank_page(FixturePeer({13: {"result": {"type": "string", "value": 42}}}))
+
+    def test_nested_user_init_field_must_be_delivered(self):
+        with self.assertRaisesRegex(AssertionError, "user __init data"):
+            check_trusted_blank_page(FixturePeer({16: {"result": {"value": {"__init": False}}}}))
 
     def test_target_cleanup_must_succeed(self):
         with self.assertRaisesRegex(AssertionError, "closed cleanly"):
