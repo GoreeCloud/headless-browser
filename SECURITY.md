@@ -42,3 +42,7 @@ A disposable CI WebSocket session checks that Target.createTarget rejects a deli
 ## Owned HTTP fixture and private-network opt-in
 
 An inert, fixed HTML document is served solely from a disposable 127.0.0.1 port with no external resources. The CDP browser must **not** fetch it with the default SSRF settings. A separate fresh loopback-only CDP instance is permitted to fetch exactly that local fixture using the explicit --allow-private-network flag; the test checks its DOM title/marker and target cleanup. This narrow opt-in is only a CI test exception, not a GoreeShield or Wardveil approval to enable internal-network browsing, bypass DNS/redirect restrictions, or visit third-party sites.
+
+## Structured CDP command and response filtering
+
+WebSocket shutdown is recognized only when the parsed CDP request method is exactly `Browser.close`, not when arbitrary JSON params contain that text. Internal `__init` connection envelopes are filtered only when they are top-level control records without a CDP response ID; nested user-result fields remain deliverable. Source regressions and real owned-loopback WebSocket/Runtime tests guard against accidental CDP disconnects and swallowed replies. This is a targeted protocol integrity improvement, not a full WebSocket fuzz test or an authorization policy.
