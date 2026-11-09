@@ -1609,12 +1609,11 @@ async fn cdp_processor(
                         &mut deferred, true,
                     ).await;
                 } else {
-                    let fetch_was_resolved = cdp_msg.text.contains("Fetch.")
-                        && handle_fetch_resolution(
-                            &cdp_msg.text,
-                            &cdp_msg.reply_tx,
-                            &mut intercepted_paused,
-                        );
+                    let fetch_was_resolved = handle_fetch_resolution(
+                        &cdp_msg.text,
+                        &cdp_msg.reply_tx,
+                        &mut intercepted_paused,
+                    );
                     if !fetch_was_resolved {
                         process_cdp_message_with_pending(&cdp_msg.text, &mut ctx, &cdp_msg.reply_tx, Some(&mut pending_runtime)).await;
                     }
@@ -2290,16 +2289,15 @@ async fn process_with_interception(
                                 }
                             }
                         }
-                        if msg.text.contains("Fetch.continueRequest")
-                            || msg.text.contains("Fetch.fulfillRequest")
-                            || msg.text.contains("Fetch.failRequest")
-                        {
-                            // Safe: only flips a oneshot to resume the parked
-                            // op inside the spawned nav task. No V8 enter on
-                            // this side; the actual V8 work happens back on
-                            // the nav task's thread.
+                        // The resolution handler parses the *actual CDP
+                        // method*; it only flips a oneshot for a real Fetch
+                        // resolution, without entering V8 on this thread.
+                        // Searching arbitrary request text previously dropped
+                        // Runtime.evaluate commands whose params happened
+                        // to mention "Fetch.continueRequest".
+                        let fetch_was_resolved =
                             handle_fetch_resolution(&msg.text, &msg.reply_tx, intercepted_paused);
-                        } else {
+                        if !fetch_was_resolved {
                             // UNSAFE during nav: would route through dispatch,
                             // which can `suspend_js` other pages and trip the
                             // V8 invariant. Defer until nav completes —
@@ -2885,6 +2883,52 @@ mod tests {
             serde_json::from_str(&frames.try_recv().expect("requestPaused")).unwrap();
         assert_eq!(first["method"], "Network.requestWillBeSent");
         assert_eq!(second["method"], "Fetch.requestPaused");
+    }
+
+    #[test]
+    fn fetch_resolution_router_only_accepts_real_cdp_methods() {
+        let (reply_tx, mut reply_rx) = CdpReplySender::channel();
+        let mut paused = HashMap::new();
+        for (id, text) in [
+            "Fetch.continueRequest",
+            "Fetch.fulfillRequest",
+            "Fetch.failRequest",
+        ].into_iter().enumerate() {
+            let command = json!({
+                "id": id + 1,
+                "method": "Runtime.evaluate",
+                "params": {"expression": text, "note": {"hint": text}},
+            });
+            assert!(!super::handle_fetch_resolution(
+                &command.to_string(), &reply_tx, &mut paused
+            ), "a method-like string inside parameters is ordinary user data");
+            assert!(reply_rx.try_recv().is_err(), "no reply should be consumed");
+        }
+        assert!(!super::handle_fetch_resolution(
+            r#"not-JSON Fetch.continueRequest"#, &reply_tx, &mut paused
+        ));
+        assert!(!super::handle_fetch_resolution(
+            r#"{"id":5,"method":"Runtime.evaluate","params":{"expression":"Fetch.failRequest"}}"#,
+            &reply_tx, &mut paused
+        ));
+        // An actual Fetch resolution, even with a JSON-escaped method name,
+        // still reaches the paused resolver and produces an acknowledgement.
+        let (resolver, mut resolved) = tokio::sync::oneshot::channel();
+        paused.insert("owned-intercept".to_owned(), super::PausedIntercept {
+            resolver, main_document: true,
+        });
+        let real = r#"{"id":6,"method":"Fetch.\u0066ailRequest","params":{"requestId":"owned-intercept","errorReason":"Aborted"}}"#;
+        assert!(super::handle_fetch_resolution(real, &reply_tx, &mut paused));
+        assert!(paused.is_empty());
+        assert!(matches!(
+            resolved.try_recv(),
+            Ok(obscura_js::ops::InterceptResolution::Fail { reason })
+                if reason == "Aborted"
+        ));
+        let reply: serde_json::Value =
+            serde_json::from_str(&reply_rx.try_recv().expect("CDP success reply")).unwrap();
+        assert_eq!(reply["id"], 6);
+        assert_eq!(reply["result"], json!({}));
     }
 
     #[test]
