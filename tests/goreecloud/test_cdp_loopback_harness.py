@@ -1,8 +1,10 @@
 """Offline checks for the local CDP control-plane smoke harness."""
 
 from unittest import TestCase, mock
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 
-from scripts.verify_cdp_loopback_smoke import sanitized_env, validate_ready
+from scripts.verify_cdp_loopback_smoke import sanitized_env, validate_ready, raw_get_version
 
 
 VALID_READY = {
@@ -14,6 +16,34 @@ VALID_READY = {
 
 
 class CdpHarnessTests(TestCase):
+    def test_raw_http_client_preserves_duplicate_header_fields(self):
+        class Receiver(BaseHTTPRequestHandler):
+            def do_GET(self):
+                count = len(self.headers.get_all("Host", []))
+                body = b'{"error":"duplicate"}'
+                self.send_response(403 if count == 2 else 200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Receiver)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            status, data = raw_get_version(server.server_port, [
+                "Host: 127.0.0.1",
+                "hOsT: 127.0.0.1",
+            ])
+            self.assertEqual(status, 403)
+            self.assertIn(b"duplicate", data)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=3)
+
     def test_valid_owned_loopback_ready_record(self):
         self.assertEqual(validate_ready(VALID_READY, 321), 39001)
 

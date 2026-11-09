@@ -11,6 +11,7 @@ import http.client
 import json
 import os
 import secrets
+import socket
 import subprocess
 import tempfile
 import time
@@ -117,6 +118,32 @@ def get_version(port: int, headers: dict[str, str] | None = None) -> tuple[int, 
         connection.close()
 
 
+def raw_get_version(port: int, header_lines: list[str]) -> tuple[int, bytes]:
+    # http.client's dict API intentionally cannot represent duplicate
+    # headers; send a bounded, literal test request to owned loopback instead.
+    request = ("\r\n".join([
+        "GET /json/version HTTP/1.1",
+        *header_lines,
+        "Connection: close",
+        "",
+        "",
+    ])).encode("ascii")
+    if len(request) > 2048:
+        raise AssertionError("raw HTTP smoke request exceeded expected bound")
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as stream:
+        stream.settimeout(5)
+        stream.sendall(request)
+        response = http.client.HTTPResponse(stream)
+        response.begin()
+        return response.status, response.read(4096)
+
+
+def require_rejected_raw(port: int, header_lines: list[str], status: int) -> None:
+    found, body = raw_get_version(port, header_lines)
+    if found != status or b"error" not in body:
+        raise AssertionError(f"expected duplicate-header HTTP {status} refusal, got {found}")
+
+
 def require_version(port: int, headers: dict[str, str] | None = None) -> None:
     status, body = get_version(port, headers)
     if status != 200:
@@ -140,6 +167,15 @@ def main() -> None:
         require_version(port)
         require_rejected(port, {"Host": "malicious.invalid"}, 403)
         require_rejected(port, {"Origin": "https://malicious.invalid"}, 403)
+        require_rejected_raw(port, [
+            f"Host: 127.0.0.1:{port}",
+            f"hOsT: 127.0.0.1:{port}",
+        ], 403)
+        require_rejected_raw(port, [
+            f"Host: 127.0.0.1:{port}",
+            "Origin: https://malicious.invalid",
+            "origin: https://other.invalid",
+        ], 403)
         # A Host is an authority only: reject URL userinfo and components
         # even when the resolved host would otherwise match 127.0.0.1.
         for malformed in (
@@ -156,6 +192,11 @@ def main() -> None:
     with disposable_cdp_server("obscura", bearer) as port:
         require_rejected(port, {}, 401)
         require_rejected(port, {"Authorization": "Bearer wrong-token"}, 401)
+        require_rejected_raw(port, [
+            f"Host: 127.0.0.1:{port}",
+            f"Authorization: Bearer {bearer}",
+            f"authorization: Bearer {bearer}",
+        ], 401)
         require_version(port, {"Authorization": f"Bearer {bearer}"})
         require_rejected(
             port,
