@@ -55,6 +55,17 @@ class CdpHarnessTests(TestCase):
         self.assertEqual(opted[:-1], default)
         self.assertEqual(default[default.index("--host") + 1], "127.0.0.1")
 
+    def test_max_connections_requires_positive_integer(self):
+        for invalid in (0, -1, True, 1.5, "1"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "positive integer"):
+                serve_command(Path("/tmp/inert"), Path("/tmp/ready"), max_connections=invalid)
+
+    def test_max_connections_is_explicit_and_does_not_relax_network_guard(self):
+        command = serve_command(Path("/tmp/inert"), Path("/tmp/ready"), max_connections=1)
+        self.assertEqual(command[-2:], ["--max-connections", "1"])
+        self.assertNotIn("--allow-private-network", command)
+        self.assertEqual(command[command.index("--host") + 1], "127.0.0.1")
+
     def test_valid_owned_loopback_ready_record(self):
         self.assertEqual(validate_ready(VALID_READY, 321), 39001)
 
