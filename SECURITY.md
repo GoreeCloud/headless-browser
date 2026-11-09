@@ -9,3 +9,8 @@ Do not expose CDP or web automation endpoints to untrusted networks. Require ind
 ## Proxy credential handling
 
 CLI startup logs intentionally report only that a proxy is configured, not its URL or credentials. Do not put passwords, bearer tokens or proxy usernames in command-line process arguments when they can be supplied through `OBSCURA_PROXY` or another approved protected secret mechanism. This mitigates CLI log leaks but does not establish that all upstream network traces, inherited diagnostics, crash reports and browser data paths are credential-safe.
+
+
+## Outbound address classification
+
+The shared `obscura-ssrf` address guard denies internal, link-local, special-use, and legacy IPv6 site-local (`fec0::/10`) addresses by default, including embedded IPv4 forms. These unit checks verify address classification only. They do not replace egress firewall rules, per-transport checks, redirect/DNS rebinding tests, or authentication of CDP clients. `--allow-private-network` and `OBSCURA_ALLOW_PRIVATE_NETWORK` deliberately relax the guard and must not be enabled for untrusted browsing workloads.
