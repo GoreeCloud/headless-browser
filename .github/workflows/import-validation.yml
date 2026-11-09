@@ -61,3 +61,5 @@ jobs:
         run: cargo build --locked -p obscura-cli --bins --no-default-features
       - name: Verify both commands and SSRF on a disposable owned-loopback fixture
         run: python3 scripts/verify_cli_loopback_smoke.py
+      - name: Verify loopback CDP discovery and HTTP auth/authority controls
+        run: python3 scripts/verify_cdp_loopback_smoke.py

@@ -18,3 +18,7 @@ The shared `obscura-ssrf` address guard denies internal, link-local, special-use
 ## CDP Host authority validation
 
 The HTTP/WebSocket discovery gateway rejects malformed Host authorities containing userinfo, paths, queries or fragments **before** matching the bound IP/port. This narrows misleading host-spoof inputs such as an attacker name followed by an at-sign and the local IP. An isolated Rust unit test is run as part of the nonpublishing CI pipeline. This control does not replace token authentication, Origin protection, transport isolation or remote access policy.
+
+## Loopback CDP control-plane smoke
+
+Nonpublishing CI launches single-worker development binaries bound only to 127.0.0.1 on ephemeral ports. It verifies the atomic ready-file identity/permission contract, DevTools HTTP discovery authority, foreign Host/Origin refusal, unauthenticated discovery under a locally generated bearer token, and successful authorized discovery. It always terminates each server. This test is **not** authorization to expose CDP beyond localhost or to enable file/private-network access, and does not validate WebSocket command handling, user isolation, traffic interception, rate-limits under load or production-grade identity.
