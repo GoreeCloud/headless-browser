@@ -62,3 +62,7 @@ Nonpublishing CI also builds the branded CLI with the optional `render` feature 
 ## In-memory CDP raster PDF fixture acceptance
 
 The render-enabled local-only CDP fixture prints a raster PDF from an inert, explicitly owned `127.0.0.1` HTML document; private-network access is opted in only for that disposable runner. The test validates the PDF magic/EOF, an explicit 4×6-inch media box, a raster image, a bounded 6 MiB decoded file and 8 MiB response, and target cleanup without saving or publishing the PDF. It does **not** establish accessible/selectable text, print layout fidelity, supported arbitrary documents, third-party site privacy, or broad browser/CDP compatibility.
+
+## Reliable CDP Browser.close acknowledgment
+
+The server's dedicated WebSocket sender previously risked losing the `Browser.close` success response because it was aborted immediately after the inbound loop ended. A one-shot final-response path now sends the identity-preserving CDP reply, flushes and closes the socket before returning, with a **two-second timeout** to prevent shutdown deadlock. Owned-loopback CI verifies request ID/session ID preservation, acknowledgment-before-close and listener usability after reconnect. This addresses a narrow protocol lifecycle fault; it is not a guarantee of all queued messages, pending tasks or on-disk state during abrupt termination.
