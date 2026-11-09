@@ -22,6 +22,8 @@ Run without compiling or fetching dependencies:
 
 The checker validates Cargo.lock format 4, unique identities, the expected crates.io registry source, correctly shaped registry checksums and correspondence between local manifests and local lock entries. New Git dependencies, alternate registries, missing checksums, unlisted local crates or changed lockfile formats fail closed for review. The JSON representation is deterministic and can be retained as release-candidate input when an approved storage location is selected; CI does not publish an artifact.
 
+**Container:** See [CONTAINER_RELEASE_GATES.md](CONTAINER_RELEASE_GATES.md) for the separate source-only Docker policy and outstanding digest, runtime, image and deployment tests.
+
 ## Outstanding before any binary, container or public release
 
 - Compare the **actual downloaded dependency sources and archives** to the lockfile checksums and verify trusted registry/index provenance.
