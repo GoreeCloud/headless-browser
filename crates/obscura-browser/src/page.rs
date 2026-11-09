@@ -1828,7 +1828,7 @@ impl Page {
             // enabled Fetch interception for this navigation.
             return Err(PageError::NetworkError(format!("net::ERR_BLOCKED_BY_CLIENT: {reason}")));
         }
-        let response = match resolution.await {
+        let response = match obscura_js::ops::await_interception_resolution(resolution).await {
             Ok(InterceptResolution::Fulfill {status, headers: supplied, body, body_base64}) => {
                 let bytes = if body_base64.is_empty() { body.into_bytes() } else {
                     BASE64.decode(body_base64).map_err(|error| PageError::NetworkError(error.to_string()))?
@@ -1873,7 +1873,13 @@ impl Page {
                 }
                 return Err(PageError::NetworkError(error));
             }
-            Err(_) => return Err(PageError::NetworkError("net::ERR_ABORTED".into())),
+            Err(reason) => return Err(PageError::NetworkError(
+                if reason == "interception decision timed out" {
+                    "net::ERR_TIMED_OUT".into()
+                } else {
+                    "net::ERR_ABORTED".into()
+                }
+            )),
         };
         Ok(Some(response))
     }

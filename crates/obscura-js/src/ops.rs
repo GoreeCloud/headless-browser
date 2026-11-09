@@ -108,6 +108,29 @@ pub fn try_enqueue_intercepted_request(
     })
 }
 
+/// Prevent a CDP client that never answers Fetch.requestPaused from keeping
+/// a V8 fetch or document navigation parked forever. The timeout cancels only
+/// this request's oneshot receiver, never grants a direct network fallback.
+pub const INTERCEPTION_DECISION_WAIT: std::time::Duration =
+    std::time::Duration::from_secs(60);
+
+async fn wait_interception_resolution(
+    receiver: tokio::sync::oneshot::Receiver<InterceptResolution>,
+    limit: std::time::Duration,
+) -> Result<InterceptResolution, &'static str> {
+    match tokio::time::timeout(limit, receiver).await {
+        Ok(Ok(resolution)) => Ok(resolution),
+        Ok(Err(_)) => Err("interception consumer disconnected"),
+        Err(_) => Err("interception decision timed out"),
+    }
+}
+
+pub async fn await_interception_resolution(
+    receiver: tokio::sync::oneshot::Receiver<InterceptResolution>,
+) -> Result<InterceptResolution, &'static str> {
+    wait_interception_resolution(receiver, INTERCEPTION_DECISION_WAIT).await
+}
+
 #[cfg(test)]
 mod goreecloud_interception_queue_tests {
     use super::*;
@@ -123,6 +146,36 @@ mod goreecloud_interception_queue_tests {
             resource_type: "Fetch".to_owned(),
             resolver,
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interception_decision_deadline_rejects_unanswered_request() {
+        let (_sender, receiver) = tokio::sync::oneshot::channel();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            wait_interception_resolution(receiver, std::time::Duration::from_millis(2)),
+        ).await.expect("short deadline must be bounded");
+        assert_eq!(result.unwrap_err(), "interception decision timed out");
+        assert_eq!(INTERCEPTION_DECISION_WAIT, std::time::Duration::from_secs(60));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interception_decision_deadline_preserves_resolution_and_closure() {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        sender.send(InterceptResolution::Fail { reason: "Aborted".into() })
+            .expect("the resolution receiver still exists");
+        let resolved = wait_interception_resolution(
+            receiver, std::time::Duration::from_secs(1),
+        ).await.expect("resolved requests must not time out");
+        assert!(matches!(resolved, InterceptResolution::Fail { reason } if reason == "Aborted"));
+
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        drop(sender);
+        assert_eq!(
+            wait_interception_resolution(receiver, std::time::Duration::from_secs(1))
+                .await.unwrap_err(),
+            "interception consumer disconnected",
+        );
     }
 
     #[test]
@@ -4407,7 +4460,7 @@ async fn fetch_url_inner(
         }
         was_intercepted = true;
         network_guard.event.as_mut().unwrap().intercepted = true;
-        match resolve_rx.await {
+        match await_interception_resolution(resolve_rx).await {
             Ok(InterceptResolution::Fulfill {
                 status,
                 headers: h,
@@ -4474,12 +4527,12 @@ async fn fetch_url_inner(
                     override_body.is_some()
                 );
             }
-            Err(_) => {
-                // The interception handler disappeared before resolving
-                // this request. Never leak a direct network fetch.
+            Err(reason) => {
+                // Missing, canceled or timed-out client decisions all block:
+                // never fall through to the direct network transport.
                 return Ok(serde_json::json!({
                     "status": 0, "body": "", "url": url, "headers": {},
-                    "blocked": true, "error": "interception consumer disconnected",
+                    "blocked": true, "error": reason,
                 }).to_string());
             }
         }
