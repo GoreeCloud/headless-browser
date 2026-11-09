@@ -26,3 +26,7 @@ Nonpublishing CI launches single-worker development binaries bound only to 127.0
 ## WebSocket CDP protocol smoke
 
 Nonpublishing CI also exercises the actual WebSocket upgrade and two side-effect-free browser metadata methods (Browser.getVersion and Target.getTargets), using a minimal stdlib RFC6455 client with masked outbound frames and bounded response sizes. It verifies refusal of browser Origins and missing/incorrect bearer tokens while the CDP server stays bound to 127.0.0.1. These are narrow protocol checks, not full WebSocket fuzzing, multi-client isolation, production authentication, navigation safety or screenshot/render acceptance.
+
+## CDP fail-closed startup checks
+
+The development CI runner tests four pre-bind failures: an unauthenticated nonloopback address (using nonlocal documentation-only 192.0.2.123, not a wildcard listener), a bearer token shorter than 32 bytes, forwarded nonloopback authority without authentication, and incomplete forwarded authority configuration. These checks must exit promptly with the expected guard message and **must not publish a ready file**. They do not authorize public CDP exposure; a long token is not proof of adequate production authentication, transport encryption, network isolation or credential governance.

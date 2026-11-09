@@ -65,3 +65,5 @@ jobs:
         run: python3 scripts/verify_cdp_loopback_smoke.py
       - name: Exercise native loopback CDP WebSocket and bearer enforcement
         run: python3 scripts/verify_cdp_websocket_smoke.py
+      - name: Refuse insecure CDP listener startup before binding
+        run: python3 scripts/verify_cdp_startup_security.py
