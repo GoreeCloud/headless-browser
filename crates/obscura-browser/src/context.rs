@@ -167,11 +167,11 @@ impl BrowserContext {
             if cookie_path.exists() {
                 match cookie_jar.load_from_file(&cookie_path) {
                     Ok(n) if n > 0 => {
-                        tracing::info!("Loaded {} cookies from {}", n, cookie_path.display());
+                        tracing::info!("Loaded {} cookies from private store (path redacted)", n);
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        tracing::warn!("Failed to load cookies from {}: {}", cookie_path.display(), e);
+                        tracing::warn!("Failed to load cookies from private store (path redacted): {}", e);
                     }
                 }
             }
@@ -359,9 +359,9 @@ impl BrowserContext {
             let _ = std::fs::create_dir_all(dir);
             let cookie_path = dir.join("cookies.json");
             if let Err(e) = self.cookie_jar.save_to_file(&cookie_path) {
-                tracing::warn!("Failed to save cookies to {}: {}", cookie_path.display(), e);
+                tracing::warn!("Failed to save cookies to private store (path redacted): {}", e);
             } else {
-                tracing::info!("Saved cookies to {}", cookie_path.display());
+                tracing::info!("Saved cookies to private store (path redacted)");
             }
         }
     }

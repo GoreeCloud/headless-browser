@@ -176,7 +176,7 @@ async fn send_get_with_connection_reset_retry(
             let Some(retry) = retry else {
                 return Err(error);
             };
-            tracing::debug!(%url, "retrying GET after connection reset");
+            tracing::debug!("Retrying GET after connection reset (URL redacted)");
             retry.send().await
         }
         result => result,
@@ -366,7 +366,7 @@ impl StealthHttpClient {
         let mut current_url = url.clone();
 
         if is_tracker_blocked(&current_url, self.block_trackers) {
-            tracing::debug!("Blocked tracker: {}", current_url);
+            tracing::debug!("Tracker blocked (URL redacted)");
             return Ok(Response {
                 status: 0,
                 url: current_url,
@@ -599,7 +599,7 @@ impl StealthHttpClient {
         max_body_bytes: usize,
     ) -> Result<StealthResponseHeaders, ObscuraNetError> {
         if is_tracker_blocked(url, self.block_trackers) {
-            tracing::debug!("Blocked tracker: {}", url);
+            tracing::debug!("Tracker blocked (URL redacted)");
             return Ok(StealthResponseHeaders {
                 status: 0,
                 headers: HashMap::new(),
