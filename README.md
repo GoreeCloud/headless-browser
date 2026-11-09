@@ -43,6 +43,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **Interception queue policy:** [docs/INTERCEPTION_BACKPRESSURE.md](docs/INTERCEPTION_BACKPRESSURE.md) (bounded Fetch/XHR/document intercepts; fail-closed on saturation or consumer loss)
 - **Dependency audit status:** [docs/SUPPLY_CHAIN_REVIEW.md](docs/SUPPLY_CHAIN_REVIEW.md) (locked inventory only; licensing/SBOM review open)
 - **Imported graphics rights:** [docs/IMPORTED_ASSET_RIGHTS.md](docs/IMPORTED_ASSET_RIGHTS.md) (upstream provenance verified; sponsor/brand use unapproved)
+- **GoreeShield log minimization:** [docs/LOG_DATA_MINIMIZATION.md](docs/LOG_DATA_MINIMIZATION.md) (targeted URL, request-ID and cookie-path redaction; full log audit open)
 - **Upstream feature documentation:** [docs/README.md](docs/README.md)
 
 GoreeCloud Headless Browser is independently maintained. It is **not an official Obscura distribution** and has no implied affiliation or endorsement. The original Obscura project name remains in technical code, inherited APIs, and historical attribution where appropriate.

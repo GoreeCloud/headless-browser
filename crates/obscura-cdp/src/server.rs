@@ -1703,9 +1703,8 @@ fn emit_routed_intercepted_request(
         return;
     };
     tracing::info!(
-        "INTERCEPTION: requestPaused for {} {} (sending to client)",
+        "INTERCEPTION: requestPaused for {} (URL redacted; sending to client)",
         intercepted.method,
-        intercepted.url
     );
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1969,10 +1968,10 @@ fn handle_fetch_resolution(
             return false;
         }
         let request_id = req.params.get("requestId").and_then(|v| v.as_str()).unwrap_or("");
-        tracing::info!("INTERCEPTION resolution: {} for {}, paused_count={}", method, request_id, intercepted_paused.len());
+        tracing::debug!("INTERCEPTION resolution: {} (request ID redacted), paused_count={}", method, intercepted_paused.len());
 
         if intercepted_paused.contains_key(request_id) {
-            tracing::info!("INTERCEPTION resolved: {}", request_id);
+            tracing::debug!("INTERCEPTION resolved (request ID redacted)");
             // Build the resolution before taking the pause. A malformed command
             // is answered with an error and the request stays paused, so a
             // corrected answer on the same requestId still drives the fetch --

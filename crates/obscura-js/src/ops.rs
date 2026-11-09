@@ -4953,7 +4953,7 @@ async fn fetch_url_inner(
             }, &String::from_utf8_lossy(&resp_bytes), false);
         }
         network_guard.event = None;
-        tracing::debug!("op_fetch_url completed: {} {} ({} bytes)", method, url, resp_bytes.len());
+        tracing::debug!("op_fetch_url completed: {} (URL redacted, {} bytes)", method, resp_bytes.len());
         Ok(resp_bytes)
     });
     fetch_body_result(&state, metadata, body, internal_load, cancel).await
