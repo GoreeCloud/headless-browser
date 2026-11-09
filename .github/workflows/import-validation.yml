@@ -73,6 +73,11 @@ jobs:
         run: |
           cargo test --locked -p obscura-cdp --lib cdp_inbound_byte_budget_is_held_until_command_drops -- --nocapture
           cargo test --locked -p obscura-cdp --lib cdp_inbound_message_channel_refuses_over_capacity -- --nocapture
+      - name: Verify bounded outgoing CDP reply and event memory budgets
+        run: |
+          cargo test --locked -p obscura-cdp --lib cdp_outgoing_reply_budget_releases_bytes_and_count_after_dequeue -- --nocapture
+          cargo test --locked -p obscura-cdp --lib cdp_outgoing_message_overflow_is_sticky_across_sender_clones -- --nocapture
+          cargo test --locked -p obscura-cdp --lib cdp_outgoing_byte_overflow_refuses_even_if_message_slots_remain -- --nocapture
       - name: Check inbound WebSocket frame and message memory budgets
         run: cargo test --locked -p obscura-cdp --lib websocket_config_caps_inbound_frames_and_messages -- --nocapture
       - name: Verify exact CDP HTTP discovery routing without header injection
