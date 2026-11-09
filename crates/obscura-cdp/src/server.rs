@@ -1655,6 +1655,24 @@ struct PausedIntercept {
     main_document: bool,
 }
 
+// The inbound interception channel is bounded, but a slow CDP client could
+// drain it into this map and never decide how each Fetch.requestPaused should
+// resolve. Bound outstanding one-shot decisions independently of that queue.
+const MAX_PAUSED_INTERCEPTIONS: usize =
+    obscura_js::ops::MAX_PENDING_INTERCEPTED_REQUESTS;
+
+fn can_admit_paused_interception(
+    paused: &mut HashMap<String, PausedIntercept>,
+    request_id: &str,
+) -> bool {
+    if paused.len() >= MAX_PAUSED_INTERCEPTIONS || paused.contains_key(request_id) {
+        // A canceled page/request can close its oneshot before cleanup runs.
+        // Reap those entries before rejecting an otherwise valid new request.
+        paused.retain(|_, pending| !pending.resolver.is_closed());
+    }
+    paused.len() < MAX_PAUSED_INTERCEPTIONS && !paused.contains_key(request_id)
+}
+
 // Native document requests use Page's page-id.counter namespace. Frame documents
 // fetched by JavaScript use fetch-N and must not become the top-level loader.
 fn is_main_document_intercept(request: &obscura_js::ops::InterceptedRequest, page_id: &str) -> bool {
@@ -1702,6 +1720,16 @@ fn emit_routed_intercepted_request(
         });
         return;
     };
+    if !can_admit_paused_interception(intercepted_paused, &intercepted.request_id) {
+        // Do not overwrite a paused resolver or emit a requestPaused event
+        // that can never be resolved. Unblocking the oneshot with Fail avoids
+        // falling through to the transport when the client stops responding.
+        tracing::warn!("CDP paused interception cap or duplicate id; blocking request");
+        let _ = intercepted.resolver.send(obscura_js::ops::InterceptResolution::Fail {
+            reason: "Aborted".into(),
+        });
+        return;
+    }
     tracing::info!(
         "INTERCEPTION: requestPaused for {} {} (sending to client)",
         intercepted.method,
@@ -2793,6 +2821,68 @@ mod tests {
             }
         });
         assert_eq!(winners.load(Ordering::Relaxed), 2_000);
+    }
+
+    #[test]
+    fn paused_interception_budget_refuses_overflow_and_duplicate_ids() {
+        let mut paused = HashMap::<String, super::PausedIntercept>::new();
+        let mut live_receivers = Vec::new();
+        for id in 0..super::MAX_PAUSED_INTERCEPTIONS {
+            let (resolver, completion) = tokio::sync::oneshot::channel();
+            paused.insert(format!("req-{id}"), super::PausedIntercept {
+                resolver, main_document: false,
+            });
+            live_receivers.push(completion);
+        }
+        let (sender, mut frames) = CdpReplySender::channel();
+
+        let mut reject = |id: &str, paused: &mut HashMap<String, super::PausedIntercept>| {
+            let (resolver, mut result) = tokio::sync::oneshot::channel();
+            super::emit_routed_intercepted_request(
+                obscura_js::ops::InterceptedRequest {
+                    request_id: id.to_owned(),
+                    page_id: "owned-page".to_owned(),
+                    url: "https://example.invalid/owned".to_owned(),
+                    method: "GET".to_owned(), headers: HashMap::new(),
+                    resource_type: "Fetch".to_owned(), resolver,
+                },
+                Some(("owned-frame", Some("owned-session".to_owned()))),
+                None, &[], &sender, paused,
+            );
+            assert!(matches!(
+                result.try_recv(),
+                Ok(obscura_js::ops::InterceptResolution::Fail { reason })
+                    if reason == "Aborted"
+            ));
+            assert!(frames.try_recv().is_err(), "refusal must not emit unresolvable Fetch.requestPaused");
+        };
+
+        reject("overflow", &mut paused);
+        reject("req-1", &mut paused);
+        assert_eq!(paused.len(), super::MAX_PAUSED_INTERCEPTIONS);
+
+        // A canceled request's oneshot receiver no longer exists. Reap that
+        // stale entry on the next admission attempt and accept one replacement.
+        drop(live_receivers.pop());
+        assert!(super::can_admit_paused_interception(&mut paused, "replacement"));
+        let (resolver, _completion) = tokio::sync::oneshot::channel();
+        super::emit_routed_intercepted_request(
+            obscura_js::ops::InterceptedRequest {
+                request_id: "replacement".to_owned(), page_id: "owned-page".to_owned(),
+                url: "https://example.invalid/new".to_owned(), method: "GET".to_owned(),
+                headers: HashMap::new(), resource_type: "Fetch".to_owned(), resolver,
+            },
+            Some(("owned-frame", Some("owned-session".to_owned()))),
+            None, &[], &sender, &mut paused,
+        );
+        assert_eq!(paused.len(), super::MAX_PAUSED_INTERCEPTIONS);
+        assert!(paused.contains_key("replacement"));
+        let first: serde_json::Value =
+            serde_json::from_str(&frames.try_recv().expect("requestWillBeSent")).unwrap();
+        let second: serde_json::Value =
+            serde_json::from_str(&frames.try_recv().expect("requestPaused")).unwrap();
+        assert_eq!(first["method"], "Network.requestWillBeSent");
+        assert_eq!(second["method"], "Fetch.requestPaused");
     }
 
     #[test]
