@@ -51,8 +51,26 @@ def validate_ready(record: object, expected_pid: int) -> int:
     return port
 
 
+def serve_command(binary: Path, ready: Path, *, allow_private_network: bool = False) -> list[str]:
+    command = [
+        str(binary), "serve", "--host", "127.0.0.1",
+        "--port", "0", "--workers", "1", "--ready-file", str(ready),
+        "--quiet",
+    ]
+    if allow_private_network:
+        # Only the owned HTML fixture test opts in. The default smoke never
+        # relaxes the private-network SSRF policy.
+        command.append("--allow-private-network")
+    return command
+
+
 @contextmanager
-def disposable_cdp_server(name: str, token: str | None = None) -> Iterator[int]:
+def disposable_cdp_server(
+    name: str,
+    token: str | None = None,
+    *,
+    allow_private_network: bool = False,
+) -> Iterator[int]:
     binary = ROOT / "target/debug" / name
     if not binary.is_file():
         raise AssertionError(f"CDP binary was not built: {binary}")
@@ -60,11 +78,7 @@ def disposable_cdp_server(name: str, token: str | None = None) -> Iterator[int]:
     with tempfile.TemporaryDirectory(prefix="goreecloud-owned-cdp-") as directory:
         ready = Path(directory) / "ready.json"
         proc = subprocess.Popen(
-            [
-                str(binary), "serve", "--host", "127.0.0.1",
-                "--port", "0", "--workers", "1", "--ready-file", str(ready),
-                "--quiet",
-            ],
+            serve_command(binary, ready, allow_private_network=allow_private_network),
             cwd=ROOT,
             env=sanitized_env(token),
             stdin=subprocess.DEVNULL,

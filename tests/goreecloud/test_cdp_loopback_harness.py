@@ -3,8 +3,9 @@
 from unittest import TestCase, mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
+from pathlib import Path
 
-from scripts.verify_cdp_loopback_smoke import sanitized_env, validate_ready, raw_get_version
+from scripts.verify_cdp_loopback_smoke import sanitized_env, validate_ready, raw_get_version, serve_command
 
 
 VALID_READY = {
@@ -43,6 +44,16 @@ class CdpHarnessTests(TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=3)
+
+    def test_private_network_optin_must_be_explicit_in_serve_args(self):
+        binary = Path("/tmp/inert-cli")
+        ready = Path("/tmp/inert-ready.json")
+        default = serve_command(binary, ready)
+        opted = serve_command(binary, ready, allow_private_network=True)
+        self.assertNotIn("--allow-private-network", default)
+        self.assertEqual(opted[-1], "--allow-private-network")
+        self.assertEqual(opted[:-1], default)
+        self.assertEqual(default[default.index("--host") + 1], "127.0.0.1")
 
     def test_valid_owned_loopback_ready_record(self):
         self.assertEqual(validate_ready(VALID_READY, 321), 39001)
