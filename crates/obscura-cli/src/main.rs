@@ -514,8 +514,9 @@ async fn run_cli() -> anyhow::Result<()> {
             if let Some(ref dir) = storage_dir {
                 tracing::info!("Storage dir: {}", dir.display());
             }
-            if let Some(ref proxy) = proxy {
-                tracing::info!("Using proxy: {}", proxy);
+            if proxy.is_some() {
+                // A proxy URL may embed usernames, passwords or query tokens.
+                tracing::info!("Proxy configured (details redacted)");
             }
             if let Some(ref ua) = user_agent {
                 tracing::info!("User-Agent: {}", ua);
@@ -685,8 +686,9 @@ async fn run_cli() -> anyhow::Result<()> {
         }
         None => {
             print_banner(args.port, "127.0.0.1");
-            if let Some(ref proxy) = args.proxy {
-                tracing::info!("Using proxy: {}", proxy);
+            if args.proxy.is_some() {
+                // Avoid leaking credentials in verbose CLI logs.
+                tracing::info!("Proxy configured (details redacted)");
             }
             obscura_cdp::start_with_options(args.port, args.proxy, stealth).await?;
         }
