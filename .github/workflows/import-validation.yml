@@ -26,6 +26,10 @@ jobs:
         run: |
           rustc --edition=2021 --test crates/obscura-cli/src/brand.rs -o "$RUNNER_TEMP/goreecloud-brand-tests"
           "$RUNNER_TEMP/goreecloud-brand-tests"
+      - name: Test isolated SSRF address policy without dependencies or network
+        run: |
+          rustc --edition=2021 --test crates/obscura-ssrf/src/lib.rs -o "$RUNNER_TEMP/goreecloud-ssrf-address-tests"
+          "$RUNNER_TEMP/goreecloud-ssrf-address-tests"
       - name: Validate attributed import without executing upstream code
         run: python3 scripts/verify_goreecloud_import.py
 
