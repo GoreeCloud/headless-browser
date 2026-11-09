@@ -1142,6 +1142,31 @@ fn peek_request_head(stream: &std::net::TcpStream) -> PeekStatus {
     PeekStatus::Head(String::from_utf8_lossy(head).into_owned())
 }
 
+/// HTTP discovery routes must come from the request-target, never from any
+/// arbitrary header or URL query text. Substring matching the full request
+/// head can misclassify a WebSocket handshake as /json/version when a client
+/// legitimately sends that string in an unrelated header value.
+fn classify_json_endpoint(head: &str) -> Option<&'static str> {
+    let request_line = head.split_once("\r\n")?.0;
+    let mut fields = request_line.split_ascii_whitespace();
+    if fields.next()? != "GET" {
+        return None;
+    }
+    let target = fields.next()?;
+    if !matches!(fields.next()?, "HTTP/1.1" | "HTTP/1.0") || fields.next().is_some() {
+        return None;
+    }
+    // Retain normal cache-busting query strings but never use them to
+    // select an endpoint or accept absolute URI/authority-form targets.
+    let path = target.split_once('?').map_or(target, |(path, _)| path);
+    match path {
+        "/json/version" => Some("version"),
+        "/json" | "/json/list" => Some("list"),
+        "/json/protocol" => Some("protocol"),
+        _ => None,
+    }
+}
+
 /// Dispatch a freshly-accepted TCP connection on the dedicated accept thread.
 ///
 /// The connection's request head has already been peeked by the accept loop
@@ -1162,15 +1187,7 @@ fn accept_dispatch(
         refuse_control_connection(stream, refusal);
         return Ok(());
     }
-    let endpoint = if head.contains("/json/version") {
-        Some("version")
-    } else if head.contains("/json/list") || head.contains("/json\r\n") || head.contains("/json HTTP") {
-        Some("list")
-    } else if head.contains("/json/protocol") {
-        Some("protocol")
-    } else {
-        None
-    };
+    let endpoint = classify_json_endpoint(head);
 
     if let Some(ep) = endpoint {
         // The request head is already sitting in the kernel receive buffer;
@@ -2711,6 +2728,34 @@ mod tests {
             r#"garbage "__init" text"#,
         ] {
             assert!(!is_connection_init_message(ordinary), "{ordinary}");
+        }
+    }
+
+    #[test]
+    fn discovery_router_uses_only_exact_http_request_targets() {
+        use super::classify_json_endpoint;
+        for (target, route) in [
+            ("/json", "list"),
+            ("/json/list", "list"),
+            ("/json/version", "version"),
+            ("/json/protocol", "protocol"),
+            ("/json/version?cache_bust=abc", "version"),
+            ("/json?hint=/json/protocol", "list"),
+        ] {
+            let head = format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:9222\r\n\r\n");
+            assert_eq!(classify_json_endpoint(&head), Some(route), "{target}");
+        }
+        for request in [
+            "GET /devtools/browser HTTP/1.1\r\nHost: 127.0.0.1:9222\r\nX-Hint: /json/version\r\n\r\n",
+            "GET /devtools/browser?hint=/json/version HTTP/1.1\r\nHost: 127.0.0.1:9222\r\n\r\n",
+            "GET /json/version-suffix HTTP/1.1\r\nHost: 127.0.0.1:9222\r\n\r\n",
+            "GET /json/list-extra HTTP/1.1\r\nHost: 127.0.0.1:9222\r\n\r\n",
+            "POST /json/version HTTP/1.1\r\nHost: 127.0.0.1:9222\r\n\r\n",
+            "GET http://127.0.0.1:9222/json/version HTTP/1.1\r\nHost: 127.0.0.1:9222\r\n\r\n",
+            "GET /json/version HTTP/1.1 extra\r\nHost: 127.0.0.1:9222\r\n\r\n",
+            "GET /json/versions HTTP/1.1\r\nHost: 127.0.0.1:9222\r\n\r\n",
+        ] {
+            assert_eq!(classify_json_endpoint(request), None, "{request}");
         }
     }
 

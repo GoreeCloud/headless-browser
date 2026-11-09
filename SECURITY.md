@@ -51,6 +51,10 @@ WebSocket shutdown is recognized only when the parsed CDP request method is exac
 
 Each WebSocket connection now limits incoming CDP frame and reassembled message sizes to 16 MiB. This reduces the per-client memory exposure from Tungstenite's default 64 MiB message limit while leaving outbound CDP screenshot/DOM responses unaffected. CI validates the configured Rust budget and sends only an oversized **masked frame header** to an owned-loopback listener, requiring a prompt refusal without sending a large payload, then confirms that a subsequent valid client still works. This is a per-message parser guard, not a total per-client/process memory budget, rate limiter, proof against hostile clients, or production network policy.
 
+## Exact CDP HTTP discovery request-target routing
+
+The local CDP accept loop classifies `/json`, `/json/list`, `/json/version`, and `/json/protocol` from the parsed HTTP request **target**, not by searching arbitrary header text. This prevents WebSocket request headers or lookalike paths from being misinterpreted as discovery traffic. CI validates exact path and optional query behavior, and verifies an owned loopback WebSocket still upgrades and answers CDP commands when an unrelated header contains `/json/version`. Existing Host/Origin/bearer controls remain in force. This is route-integrity hardening, not a complete HTTP parser or request-smuggling assessment.
+
 ## Native rendering feature acceptance
 
 Nonpublishing CI also builds the branded CLI with the optional `render` feature and captures only a static, owned HTML fixture on ephemeral loopback. The fixture contains no external fonts/scripts/images; only this test command opts into private-network access. The screenshot validator checks the PNG signature, IHDR checksum, bounded dimensions and terminating chunk; it intentionally does not distribute any image. This is **not** browser rendering pixel-accuracy validation, an untrusted-page sandbox or egress/privacy acceptance, a cross-platform GPU test, an image supply-chain approval, or a release gate completion.
