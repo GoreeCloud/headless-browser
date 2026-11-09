@@ -335,7 +335,7 @@ pub struct Page {
     pub intercept_enabled: bool,
     pub intercept_block_patterns: Vec<String>,
     pub blocked_url_patterns: Vec<String>,
-    intercept_tx: Option<tokio::sync::mpsc::UnboundedSender<obscura_js::ops::InterceptedRequest>>,
+    intercept_tx: Option<tokio::sync::mpsc::Sender<obscura_js::ops::InterceptedRequest>>,
     // Scripts to execute in the page's JS context BEFORE any of the page's
     // own scripts run — the CDP `Page.addScriptToEvaluateOnNewDocument`
     // contract. Includes `Runtime.addBinding` shims so puppeteer's
@@ -1824,7 +1824,11 @@ impl Page {
         let request = InterceptedRequest {request_id: format!("{}.{}", self.id, self.network_event_counter + 1),
             page_id: self.id.clone(), url: url.to_string(), method: method.into(), headers: request_headers.clone(),
             resource_type: "Document".into(), resolver};
-        if tx.send(request).is_err() { return Ok(None); }
+        if let Err(reason) = obscura_js::ops::try_enqueue_intercepted_request(tx, request) {
+            // Passing through after a queue overflow would silently bypass
+            // enabled Fetch interception for this navigation.
+            return Err(PageError::NetworkError(format!("net::ERR_BLOCKED_BY_CLIENT: {reason}")));
+        }
         let response = match resolution.await {
             Ok(InterceptResolution::Fulfill {status, headers: supplied, body, body_base64}) => {
                 let bytes = if body_base64.is_empty() { body.into_bytes() } else {
@@ -5062,9 +5066,9 @@ impl Page {
     /// server wires the channel (`obscura-cdp/src/server.rs`).
     pub fn enable_interception(
         &mut self,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<obscura_js::ops::InterceptedRequest> {
+    ) -> tokio::sync::mpsc::Receiver<obscura_js::ops::InterceptedRequest> {
         let (tx, rx) =
-            tokio::sync::mpsc::unbounded_channel::<obscura_js::ops::InterceptedRequest>();
+            tokio::sync::mpsc::channel::<obscura_js::ops::InterceptedRequest>(obscura_js::ops::MAX_PENDING_INTERCEPTED_REQUESTS);
         self.set_intercept_tx(tx);
         self.enable_intercept(true);
         rx
@@ -5184,7 +5188,7 @@ impl Page {
 
     pub fn set_intercept_tx(
         &mut self,
-        tx: tokio::sync::mpsc::UnboundedSender<obscura_js::ops::InterceptedRequest>,
+        tx: tokio::sync::mpsc::Sender<obscura_js::ops::InterceptedRequest>,
     ) {
         self.intercept_tx = Some(tx.clone());
         if let Some(js) = &self.js {

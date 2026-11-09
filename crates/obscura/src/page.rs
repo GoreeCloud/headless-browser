@@ -129,7 +129,7 @@ impl Page {
     /// mock, or block it. Works in stealth and non-stealth.
     pub fn enable_interception(
         &mut self,
-    ) -> tokio::sync::mpsc::UnboundedReceiver<InterceptedRequest> {
+    ) -> tokio::sync::mpsc::Receiver<InterceptedRequest> {
         self.inner.get_mut().enable_interception()
     }
 
