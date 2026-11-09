@@ -80,6 +80,8 @@ jobs:
           cargo test --locked -p obscura-cdp --lib cdp_outgoing_byte_overflow_refuses_even_if_message_slots_remain -- --nocapture
       - name: Fail closed on saturated or unavailable JavaScript interception consumers
         run: timeout 360s cargo test --locked -p obscura-js --lib goreecloud_interception_queue_tests -- --nocapture
+      - name: Bound unresolved CDP Fetch request decisions and duplicate IDs
+        run: cargo test --locked -p obscura-cdp --lib paused_interception_budget_refuses_overflow_and_duplicate_ids -- --nocapture
       - name: Check inbound WebSocket frame and message memory budgets
         run: cargo test --locked -p obscura-cdp --lib websocket_config_caps_inbound_frames_and_messages -- --nocapture
       - name: Verify WebSocket Upgrade cannot pin a client slot indefinitely
