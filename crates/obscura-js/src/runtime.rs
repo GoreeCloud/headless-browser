@@ -28,6 +28,25 @@ use crate::ops::{
     clamp_scroll_offset, document_base_url, ensure_resolved_scroll,
 };
 
+/// Individual image/font transport loads previously admitted up to 64 MiB
+/// per image. With 16 concurrent loads and 16 queued completed responses,
+/// that could retain hundreds of MiB before an image is ever decoded. Bound
+/// each *background renderer* response without changing ordinary navigation,
+/// explicit Fetch/XHR or document-script transport contracts.
+#[cfg(feature = "render")]
+pub const MAX_RENDER_BACKGROUND_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+#[cfg(feature = "render")]
+fn bounded_render_resource_request(
+    kind: obscura_net::ResourceType,
+    initiator: &url::Url,
+) -> ResourceRequest {
+    let mut request = ResourceRequest::subresource(kind, initiator);
+    request.max_response_bytes =
+        request.max_response_bytes.min(MAX_RENDER_BACKGROUND_RESPONSE_BYTES);
+    request
+}
+
 #[cfg(feature = "render")]
 struct RuntimeCanvasSurfaceSource<'a>(&'a HashMap<NodeId, crate::ops::CanvasBackingSurface>);
 
@@ -2395,7 +2414,7 @@ impl ObscuraJsRuntime {
                     } else {
                         obscura_net::ResourceType::Image
                     };
-                    let mut request = ResourceRequest::subresource(kind, &initiator);
+                    let mut request = bounded_render_resource_request(kind, &initiator);
                     match profile {
                         Some(crate::ops::ImageRequestProfile::CorsSameOrigin) => {
                             request.mode = RequestMode::Cors;
@@ -5715,6 +5734,22 @@ mod tests {
             "https://example.test/page",
             "https://assets.test/image.svg"
         ));
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn renderer_image_and_font_transfers_cap_decoded_response_bytes() {
+        let initiator = url::Url::parse("https://example.invalid/owned").unwrap();
+        for kind in [obscura_net::ResourceType::Image, obscura_net::ResourceType::Font] {
+            let mut expected = ResourceRequest::subresource(kind, &initiator);
+            expected.max_response_bytes = MAX_RENDER_BACKGROUND_RESPONSE_BYTES;
+            let bounded = bounded_render_resource_request(kind, &initiator);
+            assert_eq!(bounded, expected, "retain mode, credentials and initiator");
+        }
+        let normal_script =
+            ResourceRequest::subresource(obscura_net::ResourceType::Script, &initiator);
+        assert_eq!(normal_script.max_response_bytes, 32 * 1024 * 1024,
+            "the normal script transport must not be globally constrained");
     }
 
     #[cfg(feature = "render")]
