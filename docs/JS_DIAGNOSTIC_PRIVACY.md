@@ -11,7 +11,7 @@ JavaScript runtime console arguments and evaluation expressions are user/page-co
 - Server-side `obscura::console` tracing now records only severity and byte length. It never interpolates the page message String into log text.
 - The Page `evaluate` and `evaluate_with_timeout` failure handlers record fixed short diagnostics instead of raw caller expression/exception Strings. The obsolete caller-text truncation helper and its narrow test are removed; truncating to 80 bytes is not a privacy control.
 - `evaluate_for_cdp` and `callFunctionOn` error logs use fixed, redacted descriptions. Their API fallback responses are unchanged.
-- **CDP console events and the in-memory console buffer are unchanged**; they retain original messages for enabled consumers. This avoids silently altering the browser-client protocol, but it means clients and storage consumers still need explicit privacy/consent and retention controls.
+- **CDP console events are unchanged** and still carry original message arguments for enabled consumers. The optional in-memory console text buffer is now independently bounded and explicitly truncated under [CONSOLE_RETENTION_BUDGET.md](CONSOLE_RETENTION_BUDGET.md), preserving normal short messages; clients and storage consumers still need privacy/consent and retention controls.
 
 ## Verification and remaining risk
 

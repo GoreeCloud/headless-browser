@@ -47,7 +47,6 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **Page response-body cache:** [docs/PAGE_RESPONSE_BODY_CACHE_BUDGET.md](docs/PAGE_RESPONSE_BODY_CACHE_BUDGET.md) (32 MiB aggregate retained bodies with oldest-first eviction across aliases and JS suspension)
 - **Undrained renderer events:** [docs/RENDER_EVENT_BACKPRESSURE.md](docs/RENDER_EVENT_BACKPRESSURE.md) (8 retained events and conservative 64 MiB body budget, lossless queue backpressure)
 - **JavaScript response-body cache:** [docs/JS_NETWORK_BODY_CACHE_BUDGET.md](docs/JS_NETWORK_BODY_CACHE_BUDGET.md) (32 MiB aggregate retained encoded strings, oldest-first eviction without dropping event records)
-- **Page Network observation metadata:** [docs/PAGE_NETWORK_EVENT_PRESSURE.md](docs/PAGE_NETWORK_EVENT_PRESSURE.md) (512 pending events / 4 MiB retained String metadata; explicit count-only CDP gap notices)
 - **JavaScript observation overflow:** [docs/JS_NETWORK_EVENT_OVERFLOW.md](docs/JS_NETWORK_EVENT_OVERFLOW.md) (explicit count-only GoreeCloud CDP extension when the 4,096-entry JS event queue evicts records)
 - **Page network event backlog:** [docs/PAGE_NETWORK_EVENT_BUDGET.md](docs/PAGE_NETWORK_EVENT_BUDGET.md) (512 events / 4 MiB retained metadata with explicit count-only CDP overflow signals)
 - **Paused Fetch decisions:** [docs/CDP_PAUSED_INTERCEPTIONS.md](docs/CDP_PAUSED_INTERCEPTIONS.md) (128 outstanding decisions, duplicate-ID refusal and canceled-request cleanup)
@@ -57,6 +56,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **Imported graphics rights:** [docs/IMPORTED_ASSET_RIGHTS.md](docs/IMPORTED_ASSET_RIGHTS.md) (upstream provenance verified; sponsor/brand use unapproved)
 - **GoreeShield log minimization:** [docs/LOG_DATA_MINIMIZATION.md](docs/LOG_DATA_MINIMIZATION.md) (targeted URL, request-ID and cookie-path redaction; full log audit open)
 - **JavaScript console and evaluation log privacy:** [docs/JS_DIAGNOSTIC_PRIVACY.md](docs/JS_DIAGNOSTIC_PRIVACY.md) (no raw evaluated expressions or page console messages in server tracing)
+- **In-memory console retention:** [docs/CONSOLE_RETENTION_BUDGET.md](docs/CONSOLE_RETENTION_BUDGET.md) (16 KiB per retained message; 2 MiB/1,024 messages per JS buffer and suspended Page)
 - **Upstream feature documentation:** [docs/README.md](docs/README.md)
 
 GoreeCloud Headless Browser is independently maintained. It is **not an official Obscura distribution** and has no implied affiliation or endorsement. The original Obscura project name remains in technical code, inherited APIs, and historical attribution where appropriate.
