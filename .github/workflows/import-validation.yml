@@ -103,6 +103,10 @@ jobs:
         run: |
           cargo test --locked -p obscura-js --lib goreecloud_bounded_console_buffer_tests -- --nocapture
           cargo test --locked -p obscura-browser --lib suspended_console_backlog_caps_repeated_runtime_transfers -- --nocapture
+      - name: Bound Page Network metadata and report count-only overflow to CDP observers
+        run: |
+          cargo test --locked -p obscura-browser --lib page_network_event_budget_ -- --nocapture
+          cargo test --locked -p obscura-cdp --lib goreecloud_page_event_overflow_ -- --nocapture
       - name: Check inbound WebSocket frame and message memory budgets
         run: cargo test --locked -p obscura-cdp --lib websocket_config_caps_inbound_frames_and_messages -- --nocapture
       - name: Verify WebSocket Upgrade cannot pin a client slot indefinitely
