@@ -3987,10 +3987,24 @@ fn op_console_msg(
     #[string] msg: &str,
     #[string] args_json: &str,
 ) {
+    // Page console messages are untrusted, user-controlled data: they may
+    // contain credentials, tokens, or personal information. Keep level and
+    // message size for diagnostics without copying the text to server logs.
+    // CDP Runtime.consoleAPICalled and the bounded in-memory console buffer
+    // retain their normal payloads for authorized clients.
     match level {
-        "warn" | "warning" => tracing::warn!(target: "obscura::console", "{}", msg),
-        "error" => tracing::error!(target: "obscura::console", "{}", msg),
-        _ => tracing::info!(target: "obscura::console", "{}", msg),
+        "warn" | "warning" => tracing::warn!(
+            target: "obscura::console", message_bytes = msg.len(),
+            "Page console message redacted"
+        ),
+        "error" => tracing::error!(
+            target: "obscura::console", message_bytes = msg.len(),
+            "Page console message redacted"
+        ),
+        _ => tracing::info!(
+            target: "obscura::console", message_bytes = msg.len(),
+            "Page console message redacted"
+        ),
     }
 
     let page = state.borrow::<SharedState>().clone();
