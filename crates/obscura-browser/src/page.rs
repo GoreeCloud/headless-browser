@@ -178,6 +178,24 @@ pub struct NetworkEvent {
     pub dropped_js_events_before: u64,
 }
 
+/// Page-owned Network metadata is not a response-body cache. Keep a modest
+/// separate backlog until the CDP protocol emitter drains it. These bounds
+/// count retained String bytes (including header names/values), not allocator
+/// overhead or total V8/DOM/process RSS.
+pub const MAX_PAGE_NETWORK_EVENTS: usize = 512;
+pub const MAX_PAGE_NETWORK_EVENT_METADATA_BYTES: usize = 4 * 1024 * 1024;
+
+fn network_event_metadata_bytes(event: &NetworkEvent) -> usize {
+    let fixed = [
+        event.request_id.len(), event.url.len(), event.method.len(),
+        event.resource_type.len(), event.error_text.as_ref().map_or(0, String::len),
+    ].into_iter().fold(0_usize, |sum, len| sum.saturating_add(len));
+    event.headers.iter().chain(event.response_headers.iter())
+        .fold(fixed, |sum, (key, value)| {
+            sum.saturating_add(key.len()).saturating_add(value.len())
+        })
+}
+
 #[derive(Debug, Clone)]
 pub struct StoredResponseBody {
     /// Raw response bytes. The CDP wire form (lossy text or base64, per
@@ -318,6 +336,8 @@ pub struct Page {
     /// to the entry instead of appending a new one.
     pending_history_traversal: std::sync::Mutex<Option<usize>>,
     pub network_events: Vec<NetworkEvent>,
+    pending_page_network_event_drops: u64,
+    pending_js_overflow_notices_without_survivor: u64,
     response_bodies: std::collections::HashMap<String, StoredResponseBody>,
     response_body_order: std::collections::VecDeque<String>,
     network_event_counter: u32,
@@ -1141,6 +1161,8 @@ impl Page {
             document_history_start: 0,
             pending_history_traversal: std::sync::Mutex::new(None),
             network_events: Vec::new(),
+            pending_page_network_event_drops: 0,
+            pending_js_overflow_notices_without_survivor: 0,
             response_bodies: std::collections::HashMap::new(),
             response_body_order: std::collections::VecDeque::new(),
             network_event_counter: 0,
@@ -3459,6 +3481,16 @@ impl Page {
             )));
         }
         let deadline = tokio::time::Instant::now() + self.navigation_timeout();
+        // Navigation invalidates the previous document's pending Network
+        // metadata. Report that discarded backlog (and any earlier JS gap
+        // marker carried by an evicted event) on the next CDP flush.
+        self.pending_page_network_event_drops = self.pending_page_network_event_drops
+            .saturating_add(self.network_events.len() as u64);
+        self.pending_js_overflow_notices_without_survivor =
+            self.network_events.iter().fold(
+                self.pending_js_overflow_notices_without_survivor,
+                |count, event| count.saturating_add(event.dropped_js_events_before),
+            );
         self.network_events.clear();
         let mut current_url = url_str.to_string();
         let mut current_method = method.to_string();
@@ -4448,6 +4480,43 @@ impl Page {
     /// responseReceived for them (issue #406). Idempotent: the runtime's queue
     /// is drained, so calling this repeatedly does not duplicate events. The
     /// fetch-{N} request id is preserved so Network.getResponseBody resolves.
+    fn append_network_event(&mut self, event: NetworkEvent) {
+        self.network_events.push(event);
+        let mut retained_bytes = self.network_events.iter()
+            .fold(0_usize, |sum, item| {
+                sum.saturating_add(network_event_metadata_bytes(item))
+            });
+        while self.network_events.len() > MAX_PAGE_NETWORK_EVENTS
+            || retained_bytes > MAX_PAGE_NETWORK_EVENT_METADATA_BYTES
+        {
+            // This is intentionally observable loss, not a synthetic
+            // Network.loadingFailed or a silently incomplete request list.
+            let oldest_disposable = self.network_events.iter()
+                .position(|event| event.resource_type != "Document")
+                .unwrap_or(0);
+            let dropped = self.network_events.remove(oldest_disposable);
+            retained_bytes = retained_bytes.saturating_sub(network_event_metadata_bytes(&dropped));
+            self.pending_page_network_event_drops =
+                self.pending_page_network_event_drops.saturating_add(1);
+            // If the first surviving JS event carried its earlier overflow
+            // marker and was then evicted here, preserve that count for the
+            // next Page-level CDP flush rather than hiding the original gap.
+            self.pending_js_overflow_notices_without_survivor =
+                self.pending_js_overflow_notices_without_survivor
+                    .saturating_add(dropped.dropped_js_events_before);
+        }
+    }
+
+    /// Counts-only observability for Page event loss and evicted JS gap
+    /// markers. CDP drains these alongside the surviving Network records.
+    /// Returns (page records discarded, prior JS records discarded).
+    pub fn take_network_event_overflow_counts(&mut self) -> (u64, u64) {
+        (
+            std::mem::take(&mut self.pending_page_network_event_drops),
+            std::mem::take(&mut self.pending_js_overflow_notices_without_survivor),
+        )
+    }
+
     pub fn sync_js_network_events(&mut self) {
         let events = match self.js.as_ref() {
             Some(js) => js.take_js_network_events_with_overflow(),
@@ -4455,7 +4524,7 @@ impl Page {
         };
         let (events, dropped) = events;
         for (index, ev) in events.into_iter().enumerate() {
-            self.network_events.push(NetworkEvent {
+            self.append_network_event(NetworkEvent {
                 request_id: ev.request_id,
                 intercepted: ev.intercepted,
                 url: ev.url,
@@ -4773,7 +4842,7 @@ impl Page {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        self.network_events.push(NetworkEvent {
+        self.append_network_event(NetworkEvent {
             request_id: request_id.clone(),
             intercepted: false,
             url: url.to_string(),
@@ -5257,12 +5326,93 @@ mod tests {
         stylesheet_graph_is_origin_clean, url_matches_cdp_pattern,
         LoadedStylesheet, PendingFrameWork, StylesheetImport, DEFAULT_NAVIGATION_CHAIN_LIMIT,
         Page, BrowserContext, LifecycleState, BASE64,
+        MAX_PAGE_NETWORK_EVENTS, MAX_PAGE_NETWORK_EVENT_METADATA_BYTES,
     };
     #[cfg(feature = "render")]
     use super::remaining_settle_resource_warmup_ms;
     use base64::Engine as _;
     use std::sync::Arc;
     use obscura_dom::parse_html;
+
+    #[test]
+    fn page_network_event_budget_keeps_document_request_for_loader_fidelity() {
+        let context = std::sync::Arc::new(BrowserContext::new("document-event-cap".into()));
+        let mut page = Page::new("document-event-cap".into(), context);
+        let document_id = page.record_network_event_inner(
+            "https://example.invalid/document", "GET", "Document",
+            200, &Default::default(), 0,
+        );
+        for i in 0..MAX_PAGE_NETWORK_EVENTS {
+            page.record_network_event_inner(
+                &format!("https://example.invalid/asset/{i}"), "GET", "Image",
+                200, &Default::default(), 0,
+            );
+        }
+        assert_eq!(page.network_events.len(), MAX_PAGE_NETWORK_EVENTS);
+        assert_eq!(page.network_events[0].request_id, document_id,
+            "retaining the document event keeps CDP requestId/loaderId mapping intact");
+        let survivors = page.network_events.drain(..).collect::<Vec<_>>();
+        let counts = page.take_network_event_overflow_counts();
+        assert_eq!(survivors.len(), MAX_PAGE_NETWORK_EVENTS);
+        assert_eq!(counts, (1, 0));
+        assert_eq!(page.take_network_event_overflow_counts(), (0, 0));
+    }
+
+    #[test]
+    fn page_network_event_budget_records_count_only_loss_and_recovers() {
+        let context = std::sync::Arc::new(BrowserContext::new("event-pressure".into()));
+        let mut page = Page::new("event-pressure".into(), context);
+        for i in 0..=MAX_PAGE_NETWORK_EVENTS {
+            page.record_network_event_inner(
+                &format!("https://example.invalid/{i}"), "GET", "Fetch",
+                200, &Default::default(), 0,
+            );
+        }
+        assert_eq!(page.network_events.len(), MAX_PAGE_NETWORK_EVENTS);
+        assert!(page.network_events[0].url.ends_with("/1"));
+        assert_eq!(page.take_network_event_overflow_counts(), (1, 0));
+        assert_eq!(page.take_network_event_overflow_counts(), (0, 0));
+        page.network_events.clear();
+        page.record_network_event_inner(
+            "https://example.invalid/recovered", "GET", "Fetch",
+            200, &Default::default(), 0,
+        );
+        assert_eq!(page.network_events.len(), 1);
+        assert_eq!(page.take_network_event_overflow_counts(), (0, 0));
+    }
+
+    #[test]
+    fn page_network_event_byte_budget_refuses_oversized_metadata_without_fake_request() {
+        let context = std::sync::Arc::new(BrowserContext::new("event-byte-cap".into()));
+        let mut page = Page::new("event-byte-cap".into(), context);
+        let giant = "x".repeat(MAX_PAGE_NETWORK_EVENT_METADATA_BYTES + 1);
+        page.record_network_event_inner(
+            &giant, "GET", "Fetch", 200, &Default::default(), 0,
+        );
+        assert!(page.network_events.is_empty(),
+            "oversized metadata must not remain retained as a fake Network record");
+        assert_eq!(page.take_network_event_overflow_counts(), (1, 0));
+    }
+
+    #[test]
+    fn page_network_event_budget_preserves_evicted_js_overflow_counts() {
+        let context = std::sync::Arc::new(BrowserContext::new("js-gap".into()));
+        let mut page = Page::new("js-gap".into(), context);
+        page.record_network_event_inner(
+            "https://example.invalid/initial", "GET", "Fetch",
+            200, &Default::default(), 0,
+        );
+        page.network_events[0].dropped_js_events_before = 7;
+        for i in 0..MAX_PAGE_NETWORK_EVENTS {
+            page.record_network_event_inner(
+                &format!("https://example.invalid/{i}"), "GET", "Fetch",
+                200, &Default::default(), 0,
+            );
+        }
+        assert_eq!(page.network_events.len(), MAX_PAGE_NETWORK_EVENTS);
+        assert_eq!(page.take_network_event_overflow_counts(), (1, 7),
+            "a prior JS gap notice must survive the Page's own eviction");
+    }
 
     #[test]
     fn suspended_console_backlog_caps_repeated_runtime_transfers() {

@@ -193,7 +193,7 @@ async fn emit_post_eval_nav(
     if navigation == PendingNavigationOutcome::None {
         return Ok(());
     }
-    let (frame_id, page_url, page_id, network_events, reached_idle) = {
+    let (frame_id, page_url, page_id, network_events, reached_idle, event_pressure) = {
         let p = ctx.get_session_page_mut(session_id).ok_or("No page")?;
         (
             p.frame_id.clone(),
@@ -201,8 +201,10 @@ async fn emit_post_eval_nav(
             p.id.clone(),
             p.network_events.drain(..).collect::<Vec<_>>(),
             p.lifecycle.is_network_idle(),
+            p.take_network_event_overflow_counts(),
         )
     };
+    super::page::emit_page_network_event_pressure(ctx, &page_id, session_id, event_pressure);
     if navigation == PendingNavigationOutcome::SameDocument {
         super::page::emit_same_document_navigation(ctx, session_id, &frame_id, &page_url);
         return Ok(());

@@ -1191,6 +1191,35 @@ pub(crate) fn emit_same_document_navigation(
 /// A GoreeCloud-specific diagnostic, not a synthetic Chrome Network
 /// request or failure. CDP clients may ignore unknown extension methods;
 /// consumers needing completeness can subscribe to this explicit signal.
+/// Publish Page-level bounded-retention loss, and any JavaScript loss
+/// marker evicted before it reached the ordinary per-event emission path.
+/// These are explicit *count-only* protocol extensions, not forged Chrome
+/// Network requests or failures. Only same-target observers receive copies.
+pub(crate) fn emit_page_network_event_pressure(
+    ctx: &mut CdpContext,
+    page_id: &str,
+    source_session: &Option<String>,
+    (page_dropped, js_notices_evicted): (u64, u64),
+) {
+    if page_dropped == 0 && js_notices_evicted == 0 { return; }
+    let observers = network_observer_sessions(ctx, page_id, source_session);
+    for (source, dropped) in [
+        ("page", page_dropped),
+        ("javascript", js_notices_evicted),
+    ] {
+        if dropped == 0 { continue; }
+        let make_event = |session_id| CdpEvent {
+            method: "GoreeCloud.networkEventOverflow".into(),
+            params: json!({"source": source, "droppedEvents": dropped}),
+            session_id,
+        };
+        ctx.pending_events.push(make_event(source_session.clone()));
+        for observer in &observers {
+            ctx.pending_events.push(make_event(Some(observer.clone())));
+        }
+    }
+}
+
 fn js_network_overflow_event(dropped: u64, session_id: Option<String>) -> CdpEvent {
     CdpEvent {
         method: "GoreeCloud.networkEventOverflow".into(),
@@ -1396,7 +1425,7 @@ async fn do_navigate(
     let preload_page = ctx.get_session_page(session_id).ok_or("No page for session")?.id.clone();
     let preload_scripts = ctx.preload_sources_for_page(&preload_page);
 
-    let (frame_id, loader_id, network_events, page_url, page_id, reached_network_idle) = {
+    let (frame_id, loader_id, network_events, page_url, page_id, reached_network_idle, event_pressure) = {
         let page = ctx
             .get_session_page_mut(session_id)
             .ok_or("No page for session")?;
@@ -1428,6 +1457,7 @@ async fn do_navigate(
         // emit as Network events alongside static subresources (#406).
         page.sync_js_network_events();
         let network_events: Vec<_> = page.network_events.drain(..).collect();
+        let event_pressure = page.take_network_event_overflow_counts();
         let page_url = page.url_string();
         let page_id = page.id.clone();
         (
@@ -1437,9 +1467,11 @@ async fn do_navigate(
             page_url,
             page_id,
             reached_network_idle,
+            event_pressure,
         )
     };
 
+    emit_page_network_event_pressure(ctx, &page_id, session_id, event_pressure);
     emit_navigation_events(
         ctx,
         session_id,
@@ -1849,7 +1881,7 @@ pub async fn handle(
                     }
                     return Err(e.to_string());
                 }
-                let (frame_id, page_id, network_events, page_url, reached_idle) = {
+                let (frame_id, page_id, network_events, page_url, reached_idle, event_pressure) = {
                     let page = ctx
                         .get_session_page_mut(session_id)
                         .ok_or("No page for session")?;
@@ -1864,8 +1896,10 @@ pub async fn handle(
                         page.network_events.drain(..).collect::<Vec<_>>(),
                         page.url_string(),
                         page.lifecycle.is_network_idle(),
+                        page.take_network_event_overflow_counts(),
                     )
                 };
+                emit_page_network_event_pressure(ctx, &page_id, session_id, event_pressure);
                 let loader_id = format!("loader-{}", uuid::Uuid::new_v4());
                 emit_navigation_events(
                     ctx,
@@ -2102,6 +2136,27 @@ pub(crate) fn timestamp() -> f64 {
 mod tests {
     use super::*;
     use crate::dispatch::CdpContext;
+
+    #[test]
+    fn goreecloud_page_event_overflow_reports_count_only_to_same_target_observers() {
+        let (mut ctx, page, driver, _events) = observer_fixture();
+        emit_page_network_event_pressure(&mut ctx, &page, &driver, (3, 7));
+        for session in ["driver", "observer-a", "observer-b"] {
+            let output = ctx.pending_events.iter()
+                .filter(|event| event.session_id.as_deref() == Some(session))
+                .collect::<Vec<_>>();
+            assert_eq!(output.len(), 2, "one Page and one evicted JS gap count");
+            assert_eq!(output[0].method, "GoreeCloud.networkEventOverflow");
+            assert_eq!(output[0].params, json!({"source":"page","droppedEvents":3}));
+            assert_eq!(output[1].params, json!({"source":"javascript","droppedEvents":7}));
+            assert!(output.iter().all(|event| event.params.as_object().unwrap().len() == 2),
+                "no URLs, headers, request IDs, cookies or response bodies in notices");
+        }
+        assert!(!ctx.pending_events.iter().any(|event| event.session_id.as_deref() == Some("unrelated")));
+        let original = ctx.pending_events.len();
+        emit_page_network_event_pressure(&mut ctx, &page, &driver, (0, 0));
+        assert_eq!(ctx.pending_events.len(), original, "empty flush must not replay notices");
+    }
 
     #[test]
     fn goreecloud_js_event_overflow_is_not_a_fake_network_request_and_fans_out() {

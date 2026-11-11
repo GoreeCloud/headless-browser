@@ -48,6 +48,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **Undrained renderer events:** [docs/RENDER_EVENT_BACKPRESSURE.md](docs/RENDER_EVENT_BACKPRESSURE.md) (8 retained events and conservative 64 MiB body budget, lossless queue backpressure)
 - **JavaScript response-body cache:** [docs/JS_NETWORK_BODY_CACHE_BUDGET.md](docs/JS_NETWORK_BODY_CACHE_BUDGET.md) (32 MiB aggregate retained encoded strings, oldest-first eviction without dropping event records)
 - **JavaScript observation overflow:** [docs/JS_NETWORK_EVENT_OVERFLOW.md](docs/JS_NETWORK_EVENT_OVERFLOW.md) (explicit count-only GoreeCloud CDP extension when the 4,096-entry JS event queue evicts records)
+- **Page network event backlog:** [docs/PAGE_NETWORK_EVENT_BUDGET.md](docs/PAGE_NETWORK_EVENT_BUDGET.md) (512 events / 4 MiB retained metadata with explicit count-only CDP overflow signals)
 - **Paused Fetch decisions:** [docs/CDP_PAUSED_INTERCEPTIONS.md](docs/CDP_PAUSED_INTERCEPTIONS.md) (128 outstanding decisions, duplicate-ID refusal and canceled-request cleanup)
 - **Fetch.enable consumer gate:** [docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md](docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md) (do not enable policy when the receiver is unavailable or closed)
 - **Low-level interception consumer gate:** [docs/LOW_LEVEL_INTERCEPTION_POLICY.md](docs/LOW_LEVEL_INTERCEPTION_POLICY.md) (matching JS and document requests fail closed without a handler)

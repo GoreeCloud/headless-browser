@@ -99,6 +99,10 @@ jobs:
         run: |
           cargo test --locked -p obscura-js --lib goreecloud_js_network_event_overflow_tests -- --nocapture
           cargo test --locked -p obscura-cdp --lib goreecloud_js_event_overflow_ -- --nocapture
+      - name: Bound Page Network observation metadata and report lost records
+        run: |
+          cargo test --locked -p obscura-browser --lib page_network_event_ -- --nocapture
+          cargo test --locked -p obscura-cdp --lib goreecloud_page_event_overflow_ -- --nocapture
       - name: Bound Page and JavaScript in-memory console retention
         run: |
           cargo test --locked -p obscura-js --lib goreecloud_bounded_console_buffer_tests -- --nocapture
