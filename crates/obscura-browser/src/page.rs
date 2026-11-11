@@ -4955,6 +4955,7 @@ impl Page {
         self.pending_frame_work.clear();
         self.frames.clear();
         self.suspended_console_messages.extend(pending_console);
+        self.trim_suspended_console_messages();
         self.js = None;
     }
 
@@ -5026,6 +5027,23 @@ impl Page {
             js.take_pending_runtime_events()
         } else {
             Vec::new()
+        }
+    }
+
+    fn trim_suspended_console_messages(&mut self) {
+        // Repeatedly switching inactive tabs can otherwise accumulate a new
+        // 2 MiB console backlog on every suspend, even though each live JS
+        // runtime is bounded. Keep the newest messages just as the runtime
+        // does, without changing the CDP Runtime.consoleAPICalled payloads.
+        let mut bytes = self.suspended_console_messages.iter().fold(0_usize, |sum, message| {
+            sum.saturating_add(message.len())
+        });
+        while self.suspended_console_messages.len()
+                > obscura_js::ops::MAX_BUFFERED_CONSOLE_MESSAGES
+            || bytes > obscura_js::ops::MAX_BUFFERED_CONSOLE_TOTAL_BYTES
+        {
+            let oldest = self.suspended_console_messages.remove(0);
+            bytes = bytes.saturating_sub(oldest.len());
         }
     }
 
@@ -5245,6 +5263,25 @@ mod tests {
     use base64::Engine as _;
     use std::sync::Arc;
     use obscura_dom::parse_html;
+
+    #[test]
+    fn suspended_console_backlog_caps_repeated_runtime_transfers() {
+        let context = std::sync::Arc::new(BrowserContext::new("console-budget".into()));
+        let mut page = Page::new("console-budget".into(), context);
+        for i in 0..230 {
+            page.suspended_console_messages.push(
+                format!("id={i}:{}", "x".repeat(16 * 1024))
+            );
+            page.trim_suspended_console_messages();
+        }
+        assert!(page.suspended_console_messages.len() < 230);
+        assert!(page.suspended_console_messages.iter().map(|m| m.len()).sum::<usize>()
+            <= obscura_js::ops::MAX_BUFFERED_CONSOLE_TOTAL_BYTES);
+        assert!(page.suspended_console_messages.last().unwrap().starts_with("id=229:"));
+        let drained = page.take_pending_console_messages();
+        assert!(drained.last().unwrap().starts_with("id=229:"));
+        assert!(page.suspended_console_messages.is_empty());
+    }
 
     #[test]
     fn page_response_body_aggregate_budget_evicts_oldest_and_counts_aliases() {

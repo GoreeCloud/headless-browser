@@ -3980,6 +3980,85 @@ fn op_report_browser_exception<'s, 'i>(
     };
 }
 
+// The MCP console buffer is distinct from CDP Runtime.consoleAPICalled.
+// Retain a small, explicitly marked excerpt of an oversized single message
+// and bound the aggregate backlog even if many scripts log large payloads.
+pub const MAX_BUFFERED_CONSOLE_MESSAGES: usize = 1_024;
+pub const MAX_BUFFERED_CONSOLE_MESSAGE_BYTES: usize = 16 * 1_024;
+pub const MAX_BUFFERED_CONSOLE_TOTAL_BYTES: usize = 2 * 1_024 * 1_024;
+const CONSOLE_TRUNCATION_MARKER: &str = " [truncated]";
+
+fn buffered_console_line(level: &str, msg: &str) -> String {
+    // The level normally originates from fixed JavaScript console methods,
+    // but cap it as well rather than assuming all op callers are trusted.
+    let display_level = if level.len() <= 32 { level } else { "unknown" };
+    let prefix = format!("[{display_level}] ");
+    if prefix.len().saturating_add(msg.len()) <= MAX_BUFFERED_CONSOLE_MESSAGE_BYTES {
+        return format!("{prefix}{msg}");
+    }
+    let available = MAX_BUFFERED_CONSOLE_MESSAGE_BYTES
+        .saturating_sub(prefix.len() + CONSOLE_TRUNCATION_MARKER.len());
+    let mut end = available.min(msg.len());
+    while end > 0 && !msg.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{prefix}{}{CONSOLE_TRUNCATION_MARKER}", &msg[..end])
+}
+
+fn push_bounded_console_message(
+    backlog: &mut std::collections::VecDeque<String>,
+    level: &str,
+    message: &str,
+) {
+    backlog.push_back(buffered_console_line(level, message));
+    let mut retained_bytes = backlog.iter().fold(0_usize, |sum, entry| {
+        sum.saturating_add(entry.len())
+    });
+    while backlog.len() > MAX_BUFFERED_CONSOLE_MESSAGES
+        || retained_bytes > MAX_BUFFERED_CONSOLE_TOTAL_BYTES
+    {
+        let Some(oldest) = backlog.pop_front() else { break; };
+        retained_bytes = retained_bytes.saturating_sub(oldest.len());
+    }
+}
+
+#[cfg(test)]
+mod goreecloud_bounded_console_buffer_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_page_message_is_marked_and_utf8_safe() {
+        let long = format!("{}€SECRET", "a".repeat(MAX_BUFFERED_CONSOLE_MESSAGE_BYTES - 8));
+        let line = buffered_console_line("warning", &long);
+        assert!(line.starts_with("[warning] "));
+        assert!(line.ends_with(CONSOLE_TRUNCATION_MARKER));
+        assert!(line.len() <= MAX_BUFFERED_CONSOLE_MESSAGE_BYTES);
+        assert!(!line.ends_with("SECRET"), "oversize remainder must not be retained");
+        assert_eq!(buffered_console_line("info", "short"), "[info] short");
+        assert!(buffered_console_line(&"x".repeat(16 * 1024), "ok").len()
+            < MAX_BUFFERED_CONSOLE_MESSAGE_BYTES);
+    }
+
+    #[test]
+    fn buffered_page_console_caps_count_bytes_and_preserves_newest() {
+        let mut backlog = std::collections::VecDeque::new();
+        let large = "x".repeat(MAX_BUFFERED_CONSOLE_MESSAGE_BYTES * 2);
+        for i in 0..230 {
+            push_bounded_console_message(&mut backlog, "log", &format!("id={i} {large}"));
+        }
+        assert!(backlog.len() < 230, "total bytes cap should evict older entries");
+        assert!(backlog.iter().map(|s| s.len()).sum::<usize>()
+            <= MAX_BUFFERED_CONSOLE_TOTAL_BYTES);
+        assert!(backlog.iter().all(|s| s.len() <= MAX_BUFFERED_CONSOLE_MESSAGE_BYTES));
+        assert!(backlog.back().unwrap().starts_with("[log] id=229"));
+        let mut count_backlog = std::collections::VecDeque::new();
+        for _ in 0..(MAX_BUFFERED_CONSOLE_MESSAGES + 2) {
+            push_bounded_console_message(&mut count_backlog, "log", "small");
+        }
+        assert_eq!(count_backlog.len(), MAX_BUFFERED_CONSOLE_MESSAGES);
+    }
+}
+
 #[op2(fast)]
 fn op_console_msg(
     state: &OpState,
@@ -4010,11 +4089,7 @@ fn op_console_msg(
     let page = state.borrow::<SharedState>().clone();
     let mut page = page.borrow_mut();
     if page.console_messages_enabled {
-        if page.pending_console_messages.len() >= 1_024 {
-            page.pending_console_messages.pop_front();
-        }
-        page.pending_console_messages
-            .push_back(format!("[{level}] {msg}"));
+        push_bounded_console_message(&mut page.pending_console_messages, level, msg);
     }
     if !page.runtime_events_enabled {
         return;
