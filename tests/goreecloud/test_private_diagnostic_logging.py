@@ -78,9 +78,14 @@ class PrivateDiagnosticLoggingTests(unittest.TestCase):
         for level in ("tracing::warn!", "tracing::error!", "tracing::info!"):
             with self.subTest(level=level):
                 self.assertNotIn(f'{level}(target: "obscura::console", "{{}}", msg)', ops)
-        # The CDP and in-memory console pathways remain untouched.
-        self.assertIn('push_back(format!("[{level}] {msg}"))', ops)
+        # CDP console events retain their original arguments; buffered text
+        # now uses explicit bounded retention rather than an unrestricted copy.
+        self.assertIn(
+            "push_bounded_console_message(&mut page.pending_console_messages, level, msg)",
+            ops,
+        )
         self.assertIn("if !page.runtime_events_enabled", ops)
+        self.assertIn("RuntimeEvent::Console(RuntimeConsoleEvent", ops)
 
     def test_js_resource_logs_omit_unmasked_url_fields(self):
         ops = source("crates/obscura-js/src/ops.rs")
