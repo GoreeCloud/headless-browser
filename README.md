@@ -44,6 +44,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **Interception decision deadline:** [docs/INTERCEPTION_DECISION_DEADLINE.md](docs/INTERCEPTION_DECISION_DEADLINE.md) (60-second shared fail-closed wait for unanswered Fetch/XHR/document decisions)
 - **Render-resource result backpressure:** [docs/RENDER_RESOURCE_BACKPRESSURE.md](docs/RENDER_RESOURCE_BACKPRESSURE.md) (at most 16 queued completed image/font loads per document generation; not an aggregate byte budget)
 - **Render-resource response-size policy:** [docs/RENDER_RESOURCE_BODY_BUDGET.md](docs/RENDER_RESOURCE_BODY_BUDGET.md) (background image/font responses capped at 16 MiB decoded body per fetch)
+- **Page response-body cache:** [docs/PAGE_RESPONSE_BODY_CACHE_BUDGET.md](docs/PAGE_RESPONSE_BODY_CACHE_BUDGET.md) (32 MiB aggregate retained bodies with oldest-first eviction across aliases and JS suspension)
 - **Undrained renderer events:** [docs/RENDER_EVENT_BACKPRESSURE.md](docs/RENDER_EVENT_BACKPRESSURE.md) (8 retained events and conservative 64 MiB body budget, lossless queue backpressure)
 - **Paused Fetch decisions:** [docs/CDP_PAUSED_INTERCEPTIONS.md](docs/CDP_PAUSED_INTERCEPTIONS.md) (128 outstanding decisions, duplicate-ID refusal and canceled-request cleanup)
 - **Fetch.enable consumer gate:** [docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md](docs/CDP_FETCH_ENABLE_CONSUMER_GATE.md) (do not enable policy when the receiver is unavailable or closed)

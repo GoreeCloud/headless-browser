@@ -4802,12 +4802,31 @@ impl Page {
         request_id
     }
 
+    /// Enforce both the existing entry cap and a separate aggregate byte
+    /// budget. Eviction changes body availability only: Network event records
+    /// have already been captured and must not be silently removed.
+    fn trim_response_body_cache(&mut self, max_entries: usize, max_total_bytes: usize) {
+        let mut retained_bytes = self.response_bodies.values().fold(0_usize, |sum, body| {
+            sum.saturating_add(body.body.len())
+        });
+        while self.response_bodies.len() > max_entries || retained_bytes > max_total_bytes {
+            let Some(oldest) = self.response_body_order.pop_front() else { break; };
+            if let Some(body) = self.response_bodies.remove(&oldest) {
+                retained_bytes = retained_bytes.saturating_sub(body.body.len());
+            }
+        }
+    }
+
     fn store_response_body(&mut self, request_id: String, body: &[u8], base64_encoded: bool) {
         let max_entries = response_body_entry_limit();
-        let max_bytes = response_body_byte_limit();
+        let max_total_bytes = response_body_total_byte_limit();
+        let max_bytes = response_body_byte_limit().min(max_total_bytes);
         if max_entries == 0 || max_bytes == 0 || body.len() > max_bytes {
             return;
         }
+        // A repeated request ID replaces its prior body and becomes the
+        // newest entry. Leave no stale FIFO key that could evict it early.
+        self.response_body_order.retain(|id| id != &request_id);
         self.response_bodies.insert(
             request_id.clone(),
             StoredResponseBody {
@@ -4816,11 +4835,7 @@ impl Page {
             },
         );
         self.response_body_order.push_back(request_id);
-        while self.response_body_order.len() > max_entries {
-            if let Some(oldest) = self.response_body_order.pop_front() {
-                self.response_bodies.remove(&oldest);
-            }
-        }
+        self.trim_response_body_cache(max_entries, max_total_bytes);
     }
 
     pub fn get_response_body(&self, request_id: &str) -> Option<StoredResponseBody> {
@@ -4883,6 +4898,12 @@ impl Page {
         if let Some(body) = self.response_bodies.get(from_id).cloned() {
             self.response_bodies.insert(to_id.to_string(), body);
             self.response_body_order.push_back(to_id.to_string());
+            // Aliases own a separate Vec and must count toward the same byte
+            // ceiling as new response bodies; otherwise navigation aliases
+            // could bypass the per-page aggregate cache budget.
+            self.trim_response_body_cache(
+                response_body_entry_limit(), response_body_total_byte_limit(),
+            );
         }
     }
 
@@ -4908,25 +4929,16 @@ impl Page {
         }
         // Completed module and JS requests must survive the realm's teardown.
         self.sync_js_network_events();
-        let max_entries = response_body_entry_limit();
-        for (id, body) in self.js.as_ref().unwrap().take_network_response_bodies() {
-            // The JS-side store holds the lossy/base64 text form; convert to
-            // raw bytes so the page-side store stays uniformly lazy.
+        let suspended_bodies = self.js.as_ref().unwrap().take_network_response_bodies();
+        for (id, body) in suspended_bodies {
+            // Suspended JS bodies use exactly the same per-entry, count and
+            // aggregate-byte budgets as normal Page responses and aliases.
             let raw = if body.base64_encoded {
                 BASE64.decode(body.body.as_bytes()).unwrap_or_default()
             } else {
                 body.body.into_bytes()
             };
-            self.response_bodies.insert(id.clone(), StoredResponseBody {
-                body: raw,
-                base64_encoded: body.base64_encoded,
-            });
-            self.response_body_order.push_back(id);
-        }
-        while self.response_body_order.len() > max_entries {
-            if let Some(oldest) = self.response_body_order.pop_front() {
-                self.response_bodies.remove(&oldest);
-            }
+            self.store_response_body(id, &raw, body.base64_encoded);
         }
         // Suspension rebuilds the renderer cache on resume (`take_dom`), so
         // results for the suspended realm would have nowhere to go.
@@ -5245,6 +5257,52 @@ mod tests {
     use base64::Engine as _;
     use std::sync::Arc;
     use obscura_dom::parse_html;
+
+    #[test]
+    fn page_response_body_aggregate_budget_evicts_oldest_and_counts_aliases() {
+        let context = Arc::new(BrowserContext::with_storage_and_network(
+            "response-budget".to_string(), None, false, None, None, true,
+        ));
+        let mut page = Page::new("response-budget".to_string(), context);
+        page.store_response_body("a".into(), b"ab", false);
+        page.store_response_body("b".into(), b"cdef", true);
+        page.store_response_body("c".into(), b"ghij", false);
+        page.trim_response_body_cache(8, 8);
+        assert!(page.get_response_body("a").is_none(), "oldest must be evicted");
+        assert_eq!(page.get_response_body("b").unwrap().body, b"cdef");
+        assert_eq!(page.get_response_body("c").unwrap().body, b"ghij");
+        page.alias_response_body("b", "loader-id");
+        page.trim_response_body_cache(8, 8);
+        assert!(page.get_response_body("b").is_none(),
+            "the duplicated alias body counts toward aggregate bytes");
+        assert_eq!(page.get_response_body("loader-id").unwrap().body, b"cdef");
+        assert_eq!(page.get_response_body("c").unwrap().body, b"ghij");
+        // A repeated ID replaces one FIFO entry; it cannot later evict an
+        // unrelated replacement through an older stale order entry.
+        page.store_response_body("c".into(), b"z", false);
+        assert_eq!(page.response_body_order.iter().filter(|id| id.as_str() == "c").count(), 1);
+        page.trim_response_body_cache(1, 8);
+        assert_eq!(page.get_response_body("c").unwrap().body, b"z");
+        assert!(page.get_response_body("loader-id").is_none());
+    }
+
+    #[test]
+    fn page_response_body_aggregate_budget_recovers_after_stream_transfer() {
+        let context = Arc::new(BrowserContext::with_storage_and_network(
+            "response-stream-budget".to_string(), None, false, None, None, true,
+        ));
+        let mut page = Page::new("response-stream-budget".to_string(), context);
+        page.store_response_body("x".into(), b"four", false);
+        page.store_response_body("y".into(), b"five", false);
+        assert_eq!(page.take_response_body_raw("x"), Some(b"four".to_vec()));
+        page.trim_response_body_cache(8, 3);
+        assert!(page.get_response_body("y").is_none());
+        page.store_response_body("z".into(), b"new", false);
+        assert_eq!(page.get_response_body("z").unwrap().body, b"new");
+        page.clear_response_bodies();
+        assert!(page.response_bodies.is_empty());
+        assert!(page.response_body_order.is_empty());
+    }
 
     #[cfg(feature = "stealth")]
     #[test]
@@ -11755,4 +11813,13 @@ fn response_body_byte_limit() -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2 * 1024 * 1024)
+}
+
+/// Unlike OBSCURA_NETWORK_BODY_BUFFER_BYTES (per response), this bounds
+/// *all* Page-retained body Vecs, including copied loader-ID aliases.
+fn response_body_total_byte_limit() -> usize {
+    std::env::var("OBSCURA_NETWORK_BODY_BUFFER_TOTAL_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(32 * 1024 * 1024)
 }
