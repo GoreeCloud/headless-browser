@@ -5809,6 +5809,11 @@ mod tests {
         assert_eq!(rt.apply_render_resource_results(), 0);
         assert_eq!(rt.state.borrow().render_resource_events.len(), 4);
         assert_eq!(rt.apply_render_resource_results(), 0);
+        // Reserving a worst-case 16 MiB per future result leaves room for
+        // three more at this step (64 MiB minus the first small bodies).
+        assert_eq!(rt.state.borrow().render_resource_events.len(), 7);
+        assert_eq!(rt.state.borrow().render_resource_rx.len(), 2);
+        assert_eq!(rt.apply_render_resource_results(), 0);
         assert_eq!(
             rt.state.borrow().render_resource_events.len(),
             MAX_PENDING_RENDER_RESOURCE_EVENTS,
