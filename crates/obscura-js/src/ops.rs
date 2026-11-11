@@ -697,6 +697,11 @@ pub struct ObscuraState {
     // Console calls and uncaught script exceptions, in occurrence order.
     // The CDP layer drains this after commands and autonomous event-loop turns.
     pub pending_runtime_events: VecDeque<RuntimeEvent>,
+    /// Byte budget for the retained Runtime console/exception/lifecycle
+    /// observations. This is estimated payload metadata, not process RSS.
+    pub pending_runtime_event_bytes: usize,
+    /// Count-only gap signal for CDP clients; never store discarded values.
+    pub pending_runtime_events_dropped: u64,
     pub runtime_events_enabled: bool,
     pub pending_console_messages: VecDeque<String>,
     pub console_messages_enabled: bool,
@@ -996,6 +1001,8 @@ impl ObscuraState {
             intercept_page_id: String::new(),
             pending_binding_calls: Vec::new(),
             pending_runtime_events: VecDeque::new(),
+            pending_runtime_event_bytes: 0,
+            pending_runtime_events_dropped: 0,
             runtime_events_enabled: false,
             pending_console_messages: VecDeque::new(),
             console_messages_enabled: false,
@@ -1114,6 +1121,165 @@ pub enum RuntimeEvent {
     Console(RuntimeConsoleEvent),
     Exception(RuntimeExceptionEvent),
     DocumentLifecycle { name: String, timestamp: f64 },
+}
+
+// Pending Runtime observations are separate from the optional buffered
+// console-text queue. Account arguments, exception descriptions, stack frames
+// and JSON node overhead before retaining a page-controlled Runtime event.
+// These limits do NOT bound the source V8 heap or the pre-parse input String.
+pub const MAX_PENDING_RUNTIME_EVENTS: usize = 1_024;
+pub const MAX_RUNTIME_EVENT_METADATA_BYTES: usize = 256 * 1_024;
+pub const MAX_PENDING_RUNTIME_EVENT_METADATA_BYTES: usize = 8 * 1_024 * 1_024;
+
+fn json_retained_metadata_bytes(value: &serde_json::Value, used: &mut usize, budget: usize) {
+    *used = used.saturating_add(std::mem::size_of::<serde_json::Value>());
+    if *used > budget { return; }
+    match value {
+        serde_json::Value::String(value) => *used = used.saturating_add(value.len()),
+        serde_json::Value::Array(items) => {
+            for value in items {
+                json_retained_metadata_bytes(value, used, budget);
+                if *used > budget { return; }
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                *used = used.saturating_add(key.len());
+                if *used > budget { return; }
+                json_retained_metadata_bytes(value, used, budget);
+                if *used > budget { return; }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn runtime_event_retained_bytes(event: &RuntimeEvent) -> usize {
+    let cap = MAX_RUNTIME_EVENT_METADATA_BYTES;
+    let mut bytes = std::mem::size_of::<RuntimeEvent>();
+    let values: &[serde_json::Value] = match event {
+        RuntimeEvent::Console(value) => {
+            bytes = bytes.saturating_add(value.kind.len());
+            &value.args
+        }
+        RuntimeEvent::Exception(value) => {
+            bytes = bytes.saturating_add(value.name.len())
+                .saturating_add(value.description.len())
+                .saturating_add(value.url.len());
+            &value.stack_trace
+        }
+        RuntimeEvent::DocumentLifecycle { name, .. } => {
+            return bytes.saturating_add(name.len());
+        }
+    };
+    for value in values {
+        json_retained_metadata_bytes(value, &mut bytes, cap);
+        if bytes > cap { break; }
+    }
+    bytes
+}
+
+pub(crate) fn push_runtime_event(state: &mut ObscuraState, event: RuntimeEvent) {
+    let event_bytes = runtime_event_retained_bytes(&event);
+    if event_bytes > MAX_RUNTIME_EVENT_METADATA_BYTES {
+        state.pending_runtime_events_dropped =
+            state.pending_runtime_events_dropped.saturating_add(1);
+        return;
+    }
+    while state.pending_runtime_events.len() >= MAX_PENDING_RUNTIME_EVENTS
+        || state.pending_runtime_event_bytes.saturating_add(event_bytes)
+            > MAX_PENDING_RUNTIME_EVENT_METADATA_BYTES
+    {
+        let Some(oldest) = state.pending_runtime_events.pop_front() else { break; };
+        state.pending_runtime_event_bytes = state.pending_runtime_event_bytes
+            .saturating_sub(runtime_event_retained_bytes(&oldest));
+        state.pending_runtime_events_dropped =
+            state.pending_runtime_events_dropped.saturating_add(1);
+    }
+    state.pending_runtime_event_bytes =
+        state.pending_runtime_event_bytes.saturating_add(event_bytes);
+    state.pending_runtime_events.push_back(event);
+}
+
+#[cfg(test)]
+mod goreecloud_runtime_event_budget_tests {
+    use super::*;
+
+    fn console(label: &str, size: usize) -> RuntimeEvent {
+        RuntimeEvent::Console(RuntimeConsoleEvent {
+            kind: "log".to_owned(),
+            args: vec![serde_json::Value::String(format!(
+                "{label}:{}", "x".repeat(size)
+            ))],
+            timestamp: 0.0,
+        })
+    }
+
+    #[test]
+    fn runtime_event_budget_limits_retained_count_and_preserves_fifo() {
+        let mut state = ObscuraState::new();
+        for i in 0..(MAX_PENDING_RUNTIME_EVENTS + 2) {
+            push_runtime_event(&mut state, RuntimeEvent::DocumentLifecycle {
+                name: format!("lifecycle-{i}"), timestamp: 0.0,
+            });
+        }
+        assert_eq!(state.pending_runtime_events.len(), MAX_PENDING_RUNTIME_EVENTS);
+        assert_eq!(state.pending_runtime_events_dropped, 2);
+        assert!(matches!(
+            state.pending_runtime_events.front().unwrap(),
+            RuntimeEvent::DocumentLifecycle { name, .. } if name == "lifecycle-2"
+        ));
+        assert!(state.pending_runtime_event_bytes <= MAX_PENDING_RUNTIME_EVENT_METADATA_BYTES);
+    }
+
+    #[test]
+    fn runtime_event_budget_limits_aggregate_json_and_recovers_after_clear() {
+        let mut state = ObscuraState::new();
+        for i in 0..90 {
+            push_runtime_event(&mut state, console(&format!("message-{i}"), 128 * 1024));
+        }
+        assert!(state.pending_runtime_events.len() < 90,
+            "aggregate eight-megabyte budget must evict older large console objects");
+        assert!(state.pending_runtime_events_dropped > 0);
+        assert!(state.pending_runtime_event_bytes <= MAX_PENDING_RUNTIME_EVENT_METADATA_BYTES);
+        let oldest = state.pending_runtime_events.front().unwrap();
+        assert!(!matches!(oldest, RuntimeEvent::Console(event)
+            if event.args[0].as_str().unwrap().starts_with("message-0:")));
+        let last = state.pending_runtime_events.back().unwrap();
+        assert!(matches!(last, RuntimeEvent::Console(event)
+            if event.args[0].as_str().unwrap().starts_with("message-89:")));
+        state.pending_runtime_events.clear();
+        state.pending_runtime_event_bytes = 0;
+        push_runtime_event(&mut state, console("recovered", 2));
+        assert_eq!(state.pending_runtime_events.len(), 1);
+        assert!(state.pending_runtime_event_bytes > 0);
+    }
+
+    #[test]
+    fn runtime_event_budget_refuses_oversized_exception_and_dense_json_arrays() {
+        let mut state = ObscuraState::new();
+        push_runtime_event(&mut state, RuntimeEvent::Exception(RuntimeExceptionEvent {
+            exception_id: 1, name: "Error".into(),
+            description: "s".repeat(MAX_RUNTIME_EVENT_METADATA_BYTES + 1),
+            url: "https://example.invalid/owned".into(),
+            line_number: 0, column_number: 0,
+            stack_trace: Vec::new(), timestamp: 0.0,
+        }));
+        let dense = RuntimeEvent::Console(RuntimeConsoleEvent {
+            kind: "log".into(),
+            args: vec![serde_json::Value::Array(
+                (0..20_000).map(|_| serde_json::Value::Null).collect()
+            )],
+            timestamp: 0.0,
+        });
+        push_runtime_event(&mut state, dense);
+        assert!(state.pending_runtime_events.is_empty());
+        assert_eq!(state.pending_runtime_events_dropped, 2,
+            "oversized payloads must be counted without retaining their content");
+        push_runtime_event(&mut state, console("safe", 12));
+        assert_eq!(state.pending_runtime_events.len(), 1);
+        assert_eq!(state.pending_runtime_events_dropped, 2);
+    }
 }
 
 pub(crate) fn node_is_script(dom: &DomTree, node_id: NodeId) -> bool {
@@ -2724,12 +2890,9 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
         // Page lifecycle collection is independent of Runtime.enable.
         // The queue remains bounded; CDP filters delivery by Page subscription.
         if matches!(arg1.as_str(), "init" | "DOMContentLoaded" | "load") {
-            if state.pending_runtime_events.len() >= 1_024 {
-                state.pending_runtime_events.pop_front();
-            }
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
-            state.pending_runtime_events.push_back(RuntimeEvent::DocumentLifecycle { name: arg1, timestamp });
+            push_runtime_event(&mut state, RuntimeEvent::DocumentLifecycle { name: arg1, timestamp });
         }
         return "true".into();
     }
@@ -3947,10 +4110,7 @@ pub(crate) fn record_uncaught_exception(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64() * 1_000.0;
-    if state.pending_runtime_events.len() >= 1_024 {
-        state.pending_runtime_events.pop_front();
-    }
-    state.pending_runtime_events.push_back(RuntimeEvent::Exception(RuntimeExceptionEvent {
+    push_runtime_event(state, RuntimeEvent::Exception(RuntimeExceptionEvent {
         exception_id: state.runtime_exception_counter,
         name: error.name.clone().unwrap_or_else(|| "Error".to_string()),
         description: error.stack.clone().unwrap_or_else(|| error.exception_message.clone()),
@@ -4094,23 +4254,26 @@ fn op_console_msg(
     if !page.runtime_events_enabled {
         return;
     }
+    // Refuse oversized JSON before parsing it into another heap tree.
+    // The optional console text buffer is separate and already byte-bound.
+    if args_json.len() > MAX_RUNTIME_EVENT_METADATA_BYTES {
+        page.pending_runtime_events_dropped =
+            page.pending_runtime_events_dropped.saturating_add(1);
+        return;
+    }
     let Ok(args) = serde_json::from_str::<Vec<serde_json::Value>>(args_json) else {
         return;
     };
-    if page.pending_runtime_events.len() >= 1_024 {
-        page.pending_runtime_events.pop_front();
-    }
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64()
         * 1_000.0;
-    page.pending_runtime_events
-        .push_back(RuntimeEvent::Console(RuntimeConsoleEvent {
-            kind: level.to_string(),
-            args,
-            timestamp,
-        }));
+    push_runtime_event(&mut page, RuntimeEvent::Console(RuntimeConsoleEvent {
+        kind: level.to_string(),
+        args,
+        timestamp,
+    }));
 }
 
 // Fallback cache for runtimes that have no owning ObscuraHttpClient, such as

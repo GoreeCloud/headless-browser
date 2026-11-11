@@ -5092,10 +5092,16 @@ impl Page {
     }
 
     pub fn take_pending_runtime_events(&mut self) -> Vec<obscura_js::ops::RuntimeEvent> {
+        self.take_pending_runtime_events_with_overflow().0
+    }
+
+    pub fn take_pending_runtime_events_with_overflow(
+        &mut self,
+    ) -> (Vec<obscura_js::ops::RuntimeEvent>, u64) {
         if let Some(js) = &mut self.js {
-            js.take_pending_runtime_events()
+            js.take_pending_runtime_events_with_overflow()
         } else {
-            Vec::new()
+            (Vec::new(), 0)
         }
     }
 

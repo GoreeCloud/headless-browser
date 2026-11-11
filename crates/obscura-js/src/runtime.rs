@@ -1492,12 +1492,17 @@ impl ObscuraJsRuntime {
     }
 
     pub fn take_pending_runtime_events(&mut self) -> Vec<RuntimeEvent> {
-        let events: Vec<_> = self
-            .state
-            .borrow_mut()
-            .pending_runtime_events
-            .drain(..)
-            .collect();
+        self.take_pending_runtime_events_with_overflow().0
+    }
+
+    pub fn take_pending_runtime_events_with_overflow(&mut self) -> (Vec<RuntimeEvent>, u64) {
+        let (events, dropped) = {
+            let mut state = self.state.borrow_mut();
+            let events = state.pending_runtime_events.drain(..).collect::<Vec<_>>();
+            state.pending_runtime_event_bytes = 0;
+            let dropped = std::mem::take(&mut state.pending_runtime_events_dropped);
+            (events, dropped)
+        };
         for event in &events {
             let RuntimeEvent::Console(event) = event else {
                 continue;
@@ -1522,7 +1527,7 @@ impl ObscuraJsRuntime {
                 self.object_store.insert(object_id.to_string(), retrieval);
             }
         }
-        events
+        (events, dropped)
     }
 
     pub fn set_runtime_events_enabled(&self, enabled: bool) {
