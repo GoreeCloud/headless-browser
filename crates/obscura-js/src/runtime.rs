@@ -36,6 +36,30 @@ use crate::ops::{
 #[cfg(feature = "render")]
 pub const MAX_RENDER_BACKGROUND_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
+/// One standalone JS runtime may be serviced without its owning Page draining
+/// observed Network events. Do not move every completed (bounded) resource
+/// reply into an unbounded Vec when the consumer is absent.
+#[cfg(feature = "render")]
+pub const MAX_PENDING_RENDER_RESOURCE_EVENTS: usize = 8;
+#[cfg(feature = "render")]
+pub const MAX_PENDING_RENDER_EVENT_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+#[cfg(feature = "render")]
+fn render_event_admission_slots(state: &ObscuraState) -> usize {
+    let body_bytes = state.render_resource_events.iter().fold(0_usize, |total, event| {
+        total.saturating_add(event.response.body.len())
+    });
+    // Cannot peek inside Tokio MPSC without consuming the result. Reserve
+    // room for one maximum-sized background resource per result we dequeue,
+    // so no body is lost or requeued if the next one is large.
+    let count_slots = MAX_PENDING_RENDER_RESOURCE_EVENTS
+        .saturating_sub(state.render_resource_events.len());
+    let byte_slots = MAX_PENDING_RENDER_EVENT_BODY_BYTES
+        .saturating_sub(body_bytes) / MAX_RENDER_BACKGROUND_RESPONSE_BYTES;
+    count_slots.min(byte_slots)
+}
+
+
 #[cfg(feature = "render")]
 fn bounded_render_resource_request(
     kind: obscura_net::ResourceType,
@@ -2554,9 +2578,16 @@ impl ObscuraJsRuntime {
     pub fn apply_render_resource_results(&mut self) -> usize {
         let loads = {
             let mut state = self.state.borrow_mut();
-            let mut loads = Vec::new();
-            while let Ok(load) = state.render_resource_rx.try_recv() {
-                loads.push(load);
+            let budget = render_event_admission_slots(&state);
+            let mut loads = Vec::with_capacity(budget);
+            // Leave excess completions in the already bounded channel. The
+            // producer remains backpressured; a consumer can drain events via
+            // take_render_resource_events() and a later service turn resumes.
+            for _ in 0..budget {
+                match state.render_resource_rx.try_recv() {
+                    Ok(load) => loads.push(load),
+                    Err(_) => break,
+                }
             }
             loads
         };
@@ -5750,6 +5781,85 @@ mod tests {
             ResourceRequest::subresource(obscura_net::ResourceType::Script, &initiator);
         assert_eq!(normal_script.max_response_bytes, 32 * 1024 * 1024,
             "the normal script transport must not be globally constrained");
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn pending_render_resource_event_budget_preserves_fifo_and_recovers_after_drain() {
+        let mut rt = ObscuraJsRuntime::new();
+        let tx = rt.state.borrow().render_resource_tx.clone();
+        let total = MAX_PENDING_RENDER_RESOURCE_EVENTS + 1;
+        for i in 0..total {
+            let url = format!("https://example.invalid/resource-{i}.png");
+            tx.try_send(crate::ops::RenderResourceLoad {
+                generation: rt.document_generation(),
+                url: url.clone(),
+                profile: None,
+                is_font: false,
+                response: Some(crate::ops::RenderResourceResponse {
+                    url,
+                    status: 404,
+                    headers: Default::default(),
+                    body: std::sync::Arc::from(&b"fixture"[..]),
+                }),
+            }).expect("the result channel has room for all fixtures");
+        }
+        // Conservative 16 MiB admission slots permit four results at a
+        // time under the 64 MiB retained event body budget.
+        assert_eq!(rt.apply_render_resource_results(), 0);
+        assert_eq!(rt.state.borrow().render_resource_events.len(), 4);
+        assert_eq!(rt.apply_render_resource_results(), 0);
+        // Reserving a worst-case 16 MiB per future result leaves room for
+        // three more at this step (64 MiB minus the first small bodies).
+        assert_eq!(rt.state.borrow().render_resource_events.len(), 7);
+        assert_eq!(rt.state.borrow().render_resource_rx.len(), 2);
+        assert_eq!(rt.apply_render_resource_results(), 0);
+        assert_eq!(
+            rt.state.borrow().render_resource_events.len(),
+            MAX_PENDING_RENDER_RESOURCE_EVENTS,
+        );
+        assert_eq!(rt.state.borrow().render_resource_rx.len(), 1);
+        assert_eq!(rt.apply_render_resource_results(), 0);
+        assert_eq!(rt.state.borrow().render_resource_rx.len(), 1,
+            "a full event buffer must not discard the ninth queued completion");
+
+        let first = rt.take_render_resource_events();
+        assert_eq!(first.len(), MAX_PENDING_RENDER_RESOURCE_EVENTS);
+        for (i, event) in first.iter().enumerate() {
+            assert!(event.response.url.ends_with(&format!("resource-{i}.png")));
+        }
+        assert!(rt.state.borrow().render_resource_events.is_empty());
+        assert_eq!(rt.apply_render_resource_results(), 0);
+        let last = rt.take_render_resource_events();
+        assert_eq!(last.len(), 1);
+        assert!(last[0].response.url.ends_with("resource-8.png"));
+        assert!(rt.state.borrow().render_resource_rx.is_empty());
+    }
+
+    #[cfg(feature = "render")]
+    #[test]
+    fn pending_render_resource_event_budget_reserves_max_response_bytes() {
+        let rt = ObscuraJsRuntime::new();
+        let generation = rt.document_generation();
+        let mut state = rt.state.borrow_mut();
+        let bytes = std::sync::Arc::<[u8]>::from(
+            vec![0_u8; MAX_RENDER_BACKGROUND_RESPONSE_BYTES].into_boxed_slice()
+        );
+        for i in 0..4 {
+            state.render_resource_events.push(crate::ops::RenderResourceEvent {
+                is_font: false,
+                response: crate::ops::RenderResourceResponse {
+                    url: format!("https://example.invalid/{generation}/{i}"),
+                    status: 200,
+                    headers: Default::default(),
+                    body: bytes.clone(),
+                },
+            });
+        }
+        assert_eq!(render_event_admission_slots(&state), 0,
+            "a full byte budget must stop receiving additional channel results");
+        state.render_resource_events.clear();
+        assert_eq!(render_event_admission_slots(&state), 4);
     }
 
     #[cfg(feature = "render")]
