@@ -95,6 +95,10 @@ jobs:
         run: cargo test --locked -p obscura-browser --lib page_response_body_aggregate_budget_ -- --nocapture
       - name: Enforce aggregate JavaScript Network response-body cache memory
         run: cargo test --locked -p obscura-js --lib goreecloud_js_network_body_cache_tests -- --nocapture
+      - name: Report JS Network queue overflow through privacy-minimized CDP notices
+        run: |
+          cargo test --locked -p obscura-js --lib goreecloud_js_network_event_overflow_tests -- --nocapture
+          cargo test --locked -p obscura-cdp --lib goreecloud_js_event_overflow_ -- --nocapture
       - name: Bound Page and JavaScript in-memory console retention
         run: |
           cargo test --locked -p obscura-js --lib goreecloud_bounded_console_buffer_tests -- --nocapture
