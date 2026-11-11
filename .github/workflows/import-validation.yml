@@ -133,6 +133,8 @@ jobs:
         run: timeout 360s cargo test --locked -p obscura-js --lib --features render render_result_queue_refuses_excess_and_recovers -- --nocapture
       - name: Cap render-only image and font HTTP decoded response sizes
         run: timeout 360s cargo test --locked -p obscura-js --lib --features render renderer_image_and_font_transfers_cap_decoded_response_bytes -- --nocapture
+      - name: Backpressure undrained renderer Network events by count and bytes
+        run: timeout 360s cargo test --locked -p obscura-js --lib --features render pending_render_resource_event_budget_ -- --nocapture
       - name: Capture and validate PNG from only the owned HTML fixture
         run: timeout 100s python3 scripts/verify_render_png_smoke.py
       - name: Print and validate a raster PDF from only the owned HTML fixture
