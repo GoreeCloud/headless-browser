@@ -93,6 +93,8 @@ jobs:
         run: cargo test --locked -p obscura-cdp --lib fetch_enable_ -- --nocapture
       - name: Enforce aggregate Page Network response-body cache memory
         run: cargo test --locked -p obscura-browser --lib page_response_body_aggregate_budget_ -- --nocapture
+      - name: Enforce aggregate JavaScript Network response-body cache memory
+        run: cargo test --locked -p obscura-js --lib goreecloud_js_network_body_cache_tests -- --nocapture
       - name: Check inbound WebSocket frame and message memory budgets
         run: cargo test --locked -p obscura-cdp --lib websocket_config_caps_inbound_frames_and_messages -- --nocapture
       - name: Verify WebSocket Upgrade cannot pin a client slot indefinitely

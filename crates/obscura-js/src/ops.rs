@@ -1213,6 +1213,51 @@ fn response_body_byte_limit() -> usize {
         .unwrap_or(2 * 1024 * 1024)
 }
 
+/// The per-entry limit above does not bound a full runtime with 128 cached
+/// responses. Count the *stored String bytes*, including base64 expansion,
+/// independently from the original HTTP response body length.
+fn response_body_total_byte_limit() -> usize {
+    std::env::var("OBSCURA_NETWORK_BODY_BUFFER_TOTAL_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(32 * 1024 * 1024)
+}
+
+fn trim_js_network_body_cache(
+    gs: &mut ObscuraState,
+    max_entries: usize,
+    max_total_bytes: usize,
+) {
+    let mut retained_bytes = gs.network_response_bodies.values().fold(0_usize, |sum, body| {
+        sum.saturating_add(body.body.len())
+    });
+    while gs.network_response_bodies.len() > max_entries || retained_bytes > max_total_bytes {
+        let Some(oldest) = gs.network_response_body_order.pop_front() else { break; };
+        if let Some(body) = gs.network_response_bodies.remove(&oldest) {
+            retained_bytes = retained_bytes.saturating_sub(body.body.len());
+        }
+    }
+}
+
+fn store_js_network_body(
+    gs: &mut ObscuraState,
+    request_id: String,
+    body: StoredNetworkResponseBody,
+    max_entries: usize,
+    max_total_bytes: usize,
+) {
+    // A repeated request ID moves to the tail once. If an oversized body
+    // replaces it, do not return stale bytes from a prior completion.
+    gs.network_response_body_order.retain(|id| id != &request_id);
+    gs.network_response_bodies.remove(&request_id);
+    if max_entries == 0 || max_total_bytes == 0 || body.body.len() > max_total_bytes {
+        return;
+    }
+    gs.network_response_bodies.insert(request_id.clone(), body);
+    gs.network_response_body_order.push_back(request_id);
+    trim_js_network_body_cache(gs, max_entries, max_total_bytes);
+}
+
 fn record_js_network_completion(
     state: &RefCell<OpState>,
     event: JsNetworkEvent,
@@ -1234,16 +1279,88 @@ pub(crate) fn record_network_completion(
 ) {
     let max_entries = response_body_entry_limit();
     let max_bytes = response_body_byte_limit();
-    if max_entries > 0 && max_bytes > 0 && event.body_size <= max_bytes {
-        gs.network_response_bodies.insert(event.request_id.clone(), body());
-        gs.network_response_body_order.push_back(event.request_id.clone());
-        while gs.network_response_body_order.len() > max_entries {
-            if let Some(oldest) = gs.network_response_body_order.pop_front() {
-                gs.network_response_bodies.remove(&oldest);
-            }
+    let total_bytes = response_body_total_byte_limit();
+    if max_entries > 0 && max_bytes > 0 && total_bytes > 0 && event.body_size <= max_bytes {
+        store_js_network_body(gs, event.request_id.clone(), body(), max_entries, total_bytes);
+    } else {
+        // A repeated request ID whose latest response was too large must not
+        // expose an old body under the same CDP Network request identifier.
+        gs.network_response_bodies.remove(&event.request_id);
+        gs.network_response_body_order.retain(|id| id != &event.request_id);
+    }
+    // Cache eviction must never suppress the corresponding Network event.
+    push_js_network_event(gs, event);
+}
+
+#[cfg(test)]
+mod goreecloud_js_network_body_cache_tests {
+    use super::*;
+
+    fn stored(body: &str) -> StoredNetworkResponseBody {
+        StoredNetworkResponseBody {
+            body: body.to_owned(),
+            base64_encoded: false,
         }
     }
-    push_js_network_event(gs, event);
+
+    fn event(id: &str, size: usize) -> JsNetworkEvent {
+        JsNetworkEvent {
+            request_id: id.to_owned(),
+            intercepted: false,
+            url: "https://example.invalid/owned".to_owned(),
+            method: "GET".to_owned(),
+            resource_type: "Fetch".to_owned(),
+            status: 200,
+            response_headers: HashMap::new(),
+            body_size: size,
+            timestamp: 0.0,
+            error_text: None,
+        }
+    }
+
+    #[test]
+    fn js_network_body_cache_aggregate_budget_accounts_for_strings_and_duplicate_ids() {
+        let mut gs = ObscuraState::new();
+        store_js_network_body(&mut gs, "a".into(), stored("ab"), 8, 8);
+        store_js_network_body(&mut gs, "b".into(), stored("cdef"), 8, 8);
+        store_js_network_body(&mut gs, "c".into(), stored("ghij"), 8, 8);
+        assert!(!gs.network_response_bodies.contains_key("a"));
+        assert_eq!(gs.network_response_bodies["b"].body, "cdef");
+        assert_eq!(gs.network_response_bodies["c"].body, "ghij");
+
+        // The text representation can be longer than the original network
+        // body (base64); its actual UTF-8 String length controls admission.
+        store_js_network_body(&mut gs, "b".into(), stored("x"), 8, 8);
+        assert_eq!(gs.network_response_body_order.iter().filter(|id| id.as_str() == "b").count(), 1);
+        store_js_network_body(&mut gs, "d".into(), stored("123456"), 8, 8);
+        assert!(!gs.network_response_bodies.contains_key("c"),
+            "oldest body must be evicted to fit the new six-byte payload");
+        assert_eq!(gs.network_response_bodies["b"].body, "x");
+        assert_eq!(gs.network_response_bodies["d"].body, "123456");
+        store_js_network_body(&mut gs, "large".into(), stored("123456789"), 8, 8);
+        assert!(!gs.network_response_bodies.contains_key("large"));
+        assert_eq!(gs.network_response_bodies["d"].body, "123456");
+        store_js_network_body(&mut gs, "new".into(), stored("ok"), 8, 8);
+        assert_eq!(gs.network_response_bodies["new"].body, "ok");
+    }
+
+    #[test]
+    fn js_network_body_cache_retains_completion_events_when_caching_is_refused() {
+        let mut gs = ObscuraState::new();
+        record_network_completion(
+            &mut gs,
+            event("too-large", response_body_byte_limit() + 1),
+            || panic!("the lazy body provider must not run above the per-entry cap"),
+        );
+        assert_eq!(gs.js_network_events.len(), 1);
+        assert!(!gs.network_response_bodies.contains_key("too-large"));
+        record_network_completion(&mut gs, event("ok", 2), || stored("ok"));
+        assert_eq!(gs.js_network_events.len(), 2);
+        assert_eq!(gs.network_response_bodies["ok"].body, "ok");
+        gs.network_response_bodies.clear();
+        gs.network_response_body_order.clear();
+        assert!(gs.network_response_bodies.is_empty());
+    }
 }
 
 fn push_js_network_event(gs: &mut ObscuraState, event: JsNetworkEvent) {
