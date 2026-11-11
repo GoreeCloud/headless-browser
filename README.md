@@ -57,6 +57,7 @@ Treat page content, downloads, browser automation scripts, and remote CDP client
 - **GoreeShield log minimization:** [docs/LOG_DATA_MINIMIZATION.md](docs/LOG_DATA_MINIMIZATION.md) (targeted URL, request-ID and cookie-path redaction; full log audit open)
 - **JavaScript console and evaluation log privacy:** [docs/JS_DIAGNOSTIC_PRIVACY.md](docs/JS_DIAGNOSTIC_PRIVACY.md) (no raw evaluated expressions or page console messages in server tracing)
 - **In-memory console retention:** [docs/CONSOLE_RETENTION_BUDGET.md](docs/CONSOLE_RETENTION_BUDGET.md) (16 KiB per retained message; 2 MiB/1,024 messages per JS buffer and suspended Page)
+- **Runtime console/exception event budget:** [docs/RUNTIME_EVENT_RETENTION_BUDGET.md](docs/RUNTIME_EVENT_RETENTION_BUDGET.md) (256 KiB estimated metadata per observation; 8 MiB/1,024 events per JS runtime, count-only CDP overflow notices)
 - **Upstream feature documentation:** [docs/README.md](docs/README.md)
 
 GoreeCloud Headless Browser is independently maintained. It is **not an official Obscura distribution** and has no implied affiliation or endorsement. The original Obscura project name remains in technical code, inherited APIs, and historical attribution where appropriate.

@@ -922,10 +922,30 @@ pub(crate) async fn dispatch_with_deferred(
     }
 }
 
+/// A GoreeCloud CDP extension; never forge a normal Chrome console or
+/// exception event to represent discarded, potentially private arguments.
+fn append_runtime_overflow_notices(
+    output: &mut Vec<CdpEvent>,
+    same_target_subscribers: &[&str],
+    dropped: u64,
+) {
+    if dropped == 0 { return; }
+    // This list is already restricted to same-target Runtime or lifecycle
+    // subscribers by drain_runtime_events. Either subscriber can lose
+    // observations from the shared queue and should be notified.
+    for session in same_target_subscribers {
+        output.push(CdpEvent {
+            method: "GoreeCloud.runtimeEventOverflow".to_string(),
+            params: json!({"source": "runtime", "droppedEvents": dropped}),
+            session_id: Some((*session).to_string()),
+        });
+    }
+}
+
 pub(crate) fn drain_runtime_events(ctx: &mut CdpContext) {
     let mut drained = Vec::new();
     for page in &mut ctx.pages {
-        let runtime_events = page.take_pending_runtime_events();
+        let (runtime_events, dropped) = page.take_pending_runtime_events_with_overflow();
         for event in &runtime_events {
             if let obscura_js::ops::RuntimeEvent::DocumentLifecycle { name, timestamp } = event {
                 if let Some(timings) = ctx.lifecycle_timestamps.get_mut(&page.id) {
@@ -939,8 +959,8 @@ pub(crate) fn drain_runtime_events(ctx: &mut CdpContext) {
                 }
             }
         }
-        if !runtime_events.is_empty() {
-            drained.push((page.id.clone(), runtime_events));
+        if !runtime_events.is_empty() || dropped > 0 {
+            drained.push((page.id.clone(), runtime_events, dropped));
         }
     }
     if drained.is_empty() {
@@ -960,10 +980,11 @@ pub(crate) fn drain_runtime_events(ctx: &mut CdpContext) {
         sessions.sort_unstable();
     }
     let mut events = Vec::new();
-    for (page_id, runtime_events) in drained {
+    for (page_id, runtime_events, dropped) in drained {
         let Some(sessions) = page_to_sessions.get(page_id.as_str()) else {
             continue;
         };
+        append_runtime_overflow_notices(&mut events, sessions, dropped);
         let execution_context_id = ctx.default_context_id(&page_id).unwrap_or(1);
         for runtime_event in runtime_events {
             let subscribers = if matches!(&runtime_event, obscura_js::ops::RuntimeEvent::DocumentLifecycle { .. }) {
@@ -1280,6 +1301,26 @@ mod tests {
             params: json!({}),
             session_id: None,
         }
+    }
+
+    #[test]
+    fn goreecloud_runtime_event_overflow_notifies_only_same_target_subscribers() {
+        let mut events = Vec::new();
+        append_runtime_overflow_notices(
+            &mut events, &["driver", "observer", "lifecycle-only"], 17,
+        );
+        assert_eq!(events.len(), 3);
+        for (index, session) in ["driver", "observer", "lifecycle-only"].iter().enumerate() {
+            assert_eq!(events[index].session_id.as_deref(), Some(*session));
+            assert_eq!(events[index].method, "GoreeCloud.runtimeEventOverflow");
+            assert_eq!(events[index].params, json!({"source":"runtime","droppedEvents":17}));
+            assert_eq!(events[index].params.as_object().unwrap().len(), 2,
+                "never leak console arguments, exception stack, URL or request IDs");
+        }
+        append_runtime_overflow_notices(
+            &mut events, &["driver", "observer", "lifecycle-only"], 0,
+        );
+        assert_eq!(events.len(), 3, "clean subsequent drain must not replay notices");
     }
 
     #[tokio::test(flavor = "current_thread")]
