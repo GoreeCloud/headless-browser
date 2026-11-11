@@ -4315,7 +4315,16 @@ impl ObscuraJsRuntime {
     /// (fetch/XHR/dynamic resource). The Page moves these into its own
     /// network_events so the CDP layer emits Network events for them (#406).
     pub fn take_js_network_events(&self) -> Vec<crate::ops::JsNetworkEvent> {
-        std::mem::take(&mut self.state.borrow_mut().js_network_events)
+        self.take_js_network_events_with_overflow().0
+    }
+
+    /// A Page takes both the surviving observations and the number lost
+    /// before them, atomically. The latter is only a counter, never the
+    /// discarded metadata, and is reset only at the same drain boundary.
+    pub fn take_js_network_events_with_overflow(&self) -> (Vec<crate::ops::JsNetworkEvent>, u64) {
+        let mut state = self.state.borrow_mut();
+        let dropped = std::mem::take(&mut state.js_network_events_dropped);
+        (std::mem::take(&mut state.js_network_events), dropped)
     }
 
     pub fn dom_ref(&self) -> Option<std::cell::Ref<'_, Option<DomTree>>> {

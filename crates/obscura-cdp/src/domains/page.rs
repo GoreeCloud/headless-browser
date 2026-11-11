@@ -1014,6 +1014,11 @@ pub fn emit_navigation_events(
     }
 
     for (i, net_event) in network_events.iter().enumerate() {
+        if net_event.dropped_js_events_before > 0 {
+            ctx.pending_events.push(js_network_overflow_event(
+                net_event.dropped_js_events_before, es.clone(),
+            ));
+        }
         let rid = &nav_request_ids[i];
         if Some(i) != nav_idx && !net_event.intercepted {
             ctx.pending_events.push(CdpEvent {
@@ -1149,7 +1154,8 @@ fn fan_out_network_events(
         for index in event_start..event_end {
             let event = &ctx.pending_events[index];
             if matches!(event.method.as_str(),
-                "Network.requestWillBeSent" | "Network.responseReceived" | "Network.loadingFinished" | "Network.loadingFailed")
+                "Network.requestWillBeSent" | "Network.responseReceived" | "Network.loadingFinished" | "Network.loadingFailed"
+                | "GoreeCloud.networkEventOverflow")
             {
                 let copy = CdpEvent {
                     method: event.method.clone(),
@@ -1182,6 +1188,17 @@ pub(crate) fn emit_same_document_navigation(
 /// Emit completed script-initiated requests after the document lifecycle has
 /// already finished. These requests belong to the current document loader and
 /// must not replay frame navigation or load lifecycle events.
+/// A GoreeCloud-specific diagnostic, not a synthetic Chrome Network
+/// request or failure. CDP clients may ignore unknown extension methods;
+/// consumers needing completeness can subscribe to this explicit signal.
+fn js_network_overflow_event(dropped: u64, session_id: Option<String>) -> CdpEvent {
+    CdpEvent {
+        method: "GoreeCloud.networkEventOverflow".into(),
+        params: json!({"source": "javascript", "droppedEvents": dropped}),
+        session_id,
+    }
+}
+
 pub(crate) fn emit_runtime_network_events(
     ctx: &mut CdpContext,
     session_id: &Option<String>,
@@ -1200,6 +1217,11 @@ pub(crate) fn emit_runtime_network_events(
         .cloned()
         .unwrap_or_else(|| format!("loader-blank-{page_id}"));
     for network_event in network_events {
+        if network_event.dropped_js_events_before > 0 {
+            ctx.pending_events.push(js_network_overflow_event(
+                network_event.dropped_js_events_before, session_id.clone(),
+            ));
+        }
         let request_id = &network_event.request_id;
         if !network_event.intercepted {
             ctx.pending_events.push(CdpEvent {
@@ -2081,6 +2103,56 @@ mod tests {
     use super::*;
     use crate::dispatch::CdpContext;
 
+    #[test]
+    fn goreecloud_js_event_overflow_is_not_a_fake_network_request_and_fans_out() {
+        let (mut ctx, page, driver, mut events) = observer_fixture();
+        events[1].dropped_js_events_before = 7;
+        emit_runtime_network_events(
+            &mut ctx, &driver, "frame-1", "https://example.test/", &page, &events[1..],
+        );
+        let for_session = |session: &str| ctx.pending_events.iter()
+            .filter(|event| event.session_id.as_deref() == Some(session))
+            .collect::<Vec<_>>();
+        for session in ["driver", "observer-a", "observer-b"] {
+            let session_events = for_session(session);
+            assert_eq!(session_events[0].method, "GoreeCloud.networkEventOverflow");
+            assert_eq!(session_events[0].params["source"], "javascript");
+            assert_eq!(session_events[0].params["droppedEvents"], 7);
+            assert_eq!(session_events[0].params.as_object().unwrap().len(), 2,
+                "overflow diagnostics must not include URLs, headers or bodies");
+            assert_eq!(session_events[1].method, "Network.requestWillBeSent");
+            assert_eq!(session_events[2].method, "Network.responseReceived");
+            assert_eq!(session_events[3].method, "Network.loadingFinished");
+        }
+        assert!(for_session("unrelated").is_empty(),
+            "unrelated CDP targets must not see private event loss metadata");
+    }
+
+    #[test]
+    fn goreecloud_js_event_overflow_survives_navigation_event_phasing() {
+        let (mut ctx, page, driver, mut events) = observer_fixture();
+        events[1].dropped_js_events_before = 2;
+        emit_navigation_events(
+            &mut ctx, &driver, &page, &events[0].request_id,
+            "https://example.test/", &page, &events, WaitUntil::Load, true,
+        );
+        let driver_events = ctx.pending_events.iter()
+            .filter(|ev| ev.session_id == driver).collect::<Vec<_>>();
+        let notice = driver_events.iter().position(|e| e.method == "GoreeCloud.networkEventOverflow")
+            .expect("explicit count-only navigation overflow diagnostic");
+        let remaining_request = driver_events.iter().position(|e|
+            e.method == "Network.requestWillBeSent" && e.params["requestId"] == "script-1")
+            .expect("the surviving JS network request");
+        assert!(notice < remaining_request, "overflow notice must precede surviving request");
+        assert_eq!(driver_events[notice].params["droppedEvents"], 2);
+        assert_eq!(driver_events.iter().filter(|e| e.method == "GoreeCloud.networkEventOverflow").count(), 1);
+        for session in ["observer-a", "observer-b"] {
+            assert_eq!(ctx.pending_events.iter().filter(|e|
+                e.session_id.as_deref() == Some(session) && e.method == "GoreeCloud.networkEventOverflow"
+            ).count(), 1);
+        }
+    }
+
     fn observer_fixture() -> (CdpContext, String, Option<String>, Vec<obscura_browser::NetworkEvent>) {
         let mut ctx = CdpContext::new();
         let page = ctx.create_page();
@@ -2096,7 +2168,7 @@ mod tests {
                 intercepted: false, url: url.into(), method: "GET".into(),
                 resource_type: kind.into(), status, headers: Default::default(),
                 response_headers: std::sync::Arc::new(Default::default()), body_size: 12, timestamp: 42.0,
-                error_text: None,
+                error_text: None, dropped_js_events_before: 0,
             }).collect();
         (ctx, page, driver, events)
     }
@@ -2491,7 +2563,7 @@ mod tests {
             )])),
             body_size: 12,
             timestamp: 42.0,
-            error_text: None,
+            error_text: None, dropped_js_events_before: 0,
         };
 
         emit_runtime_network_events(
@@ -2583,7 +2655,7 @@ mod tests {
             status: 200,
             headers: std::collections::HashMap::new(),
             response_headers: std::sync::Arc::new(std::collections::HashMap::new()),
-            error_text: None,
+            error_text: None, dropped_js_events_before: 0,
             body_size: 10,
             timestamp: 1.0,
         })
@@ -2639,7 +2711,7 @@ mod tests {
             status: 200, headers: Default::default(),
             response_headers: std::sync::Arc::new(std::collections::HashMap::from([
                 ("content-type".into(), "text/html".into()),
-            ])), body_size: 0, timestamp: 42.0, error_text: None,
+            ])), body_size: 0, timestamp: 42.0, error_text: None, dropped_js_events_before: 0,
         };
         let frame = obscura_browser::NetworkEvent {
             request_id: "fetch-1".into(),
@@ -2677,7 +2749,7 @@ mod tests {
             response_headers: std::sync::Arc::new(std::collections::HashMap::new()),
             body_size: 0,
             timestamp: 42.0,
-            error_text: None,
+            error_text: None, dropped_js_events_before: 0,
         };
 
         emit_navigation_events(
