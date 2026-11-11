@@ -172,6 +172,10 @@ pub struct NetworkEvent {
     pub body_size: usize,
     pub timestamp: f64,
     pub error_text: Option<String>,
+    /// Nonzero only on the earliest surviving JS event after a capped
+    /// runtime queue overflow. CDP emits one GoreeCloud extension notice
+    /// before the request, without inventing a Network request/failure.
+    pub dropped_js_events_before: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -4446,10 +4450,11 @@ impl Page {
     /// fetch-{N} request id is preserved so Network.getResponseBody resolves.
     pub fn sync_js_network_events(&mut self) {
         let events = match self.js.as_ref() {
-            Some(js) => js.take_js_network_events(),
+            Some(js) => js.take_js_network_events_with_overflow(),
             None => return,
         };
-        for ev in events {
+        let (events, dropped) = events;
+        for (index, ev) in events.into_iter().enumerate() {
             self.network_events.push(NetworkEvent {
                 request_id: ev.request_id,
                 intercepted: ev.intercepted,
@@ -4462,6 +4467,7 @@ impl Page {
                 body_size: ev.body_size,
                 timestamp: ev.timestamp,
                 error_text: ev.error_text,
+                dropped_js_events_before: if index == 0 { dropped } else { 0 },
             });
         }
     }
@@ -4779,6 +4785,7 @@ impl Page {
             body_size,
             timestamp,
             error_text: None,
+            dropped_js_events_before: 0,
         });
         request_id
     }

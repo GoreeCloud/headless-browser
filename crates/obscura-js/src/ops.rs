@@ -711,6 +711,9 @@ pub struct ObscuraState {
     // drained by the Page into its network_events so the CDP layer emits
     // Network.requestWillBeSent / responseReceived for them (issue #406).
     pub js_network_events: Vec<JsNetworkEvent>,
+    /// Number of script-network observations evicted by the 4,096-entry
+    /// queue since the last Page drain. Only count, never URLs or headers.
+    pub js_network_events_dropped: u64,
     // Frame documents that have been fetched and are waiting for a realm.
     // Building one needs the whole runtime, which an op cannot reach, so
     // `op_frame_document_ready` queues here and the Page drains it between
@@ -1001,6 +1004,7 @@ impl ObscuraState {
             network_response_body_order: VecDeque::new(),
             fetched_urls: Vec::new(),
             js_network_events: Vec::new(),
+            js_network_events_dropped: 0,
             pending_frames: Vec::new(),
             pending_frame_bytes: 0,
             frame_id_counter: 0,
@@ -1363,12 +1367,47 @@ mod goreecloud_js_network_body_cache_tests {
     }
 }
 
+#[cfg(test)]
+mod goreecloud_js_network_event_overflow_tests {
+    use super::*;
+
+    #[test]
+    fn js_event_queue_counts_dropped_records_without_retaining_metadata() {
+        let mut state = ObscuraState::new();
+        let template = JsNetworkEvent {
+            request_id: "fixture".into(),
+            intercepted: false,
+            url: "https://example.invalid/test".into(),
+            method: "GET".into(),
+            resource_type: "Fetch".into(),
+            status: 200,
+            response_headers: HashMap::new(),
+            body_size: 0,
+            timestamp: 0.0,
+            error_text: None,
+        };
+        for i in 0..4099 {
+            let mut ev = template.clone();
+            ev.request_id = format!("fetch-{i}");
+            push_js_network_event(&mut state, ev);
+        }
+        assert_eq!(state.js_network_events.len(), 4096);
+        assert_eq!(state.js_network_events_dropped, 3);
+        assert_eq!(state.js_network_events[0].request_id, "fetch-3");
+        assert_eq!(state.js_network_events[4095].request_id, "fetch-4098");
+        // The counter is only metadata: it must not contain the dropped
+        // response's URL, cookies, or body.
+        assert_eq!(state.js_network_events_dropped.to_string(), "3");
+    }
+}
+
 fn push_js_network_event(gs: &mut ObscuraState, event: JsNetworkEvent) {
     gs.js_network_events.push(event);
     const MAX_JS_NETWORK_EVENTS: usize = 4096;
     if gs.js_network_events.len() > MAX_JS_NETWORK_EVENTS {
         let overflow = gs.js_network_events.len() - MAX_JS_NETWORK_EVENTS;
         gs.js_network_events.drain(0..overflow);
+        gs.js_network_events_dropped = gs.js_network_events_dropped.saturating_add(overflow as u64);
     }
 }
 
