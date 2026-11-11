@@ -1861,7 +1861,7 @@ fn sync_live_page_background_events(ctx: &mut CdpContext) {
         else {
             continue;
         };
-        let (frame_id, page_url, network_events, same_document_navigation) = {
+        let (frame_id, page_url, network_events, same_document_navigation, event_pressure) = {
             let Some(page) = ctx.get_page_mut(&page_id) else {
                 continue;
             };
@@ -1875,8 +1875,12 @@ fn sync_live_page_background_events(ctx: &mut CdpContext) {
                 page.url_string(),
                 page.network_events.drain(..).collect::<Vec<_>>(),
                 same_document_navigation,
+                page.take_network_event_overflow_counts(),
             )
         };
+        crate::domains::page::emit_page_network_event_pressure(
+            ctx, &page_id, &session_id, event_pressure,
+        );
         if same_document_navigation {
             crate::domains::page::emit_same_document_navigation(
                 ctx, &session_id, &frame_id, &page_url,
@@ -2350,6 +2354,7 @@ async fn process_with_interception(
     // alongside the static navigation subresources (#406).
     page.sync_js_network_events();
     let network_events: Vec<_> = page.network_events.drain(..).collect();
+    let event_pressure = page.take_network_event_overflow_counts();
     let failed_document = if document_request_started && navigate_result.is_err()
         && !network_events.iter().any(|event| event.request_id == loader_id && event.resource_type == "Document") {
         Some(loader_id.clone())
@@ -2384,6 +2389,10 @@ async fn process_with_interception(
             let _ = reply_tx.send(json);
         }
     }
+
+    crate::domains::page::emit_page_network_event_pressure(
+        ctx, &page_id_for_events, &session_for_events, event_pressure,
+    );
 
     // Shared event emission: includes the post-#190 Network.requestWillBeSent
     // -before-frameNavigated ordering, the #189 requestId=loaderId trick that
