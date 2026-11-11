@@ -59,6 +59,29 @@ class PrivateDiagnosticLoggingTests(unittest.TestCase):
                 self.assertNotIn("tracing::debug!(%url,", content)
                 self.assertIn("URL redacted", content)
 
+    def test_page_console_messages_and_eval_text_are_not_server_log_payloads(self):
+        page = source("crates/obscura-browser/src/page.rs")
+        ops = source("crates/obscura-js/src/ops.rs")
+        for leak in (
+            "JS eval error/timeout for",
+            "JS eval error for",
+            "truncate_on_char_boundary(expression",
+            'tracing::debug!("evaluate_for_cdp error: {}", e)',
+            'tracing::debug!("callFunctionOn error: {}", e)',
+        ):
+            with self.subTest(leak=leak):
+                self.assertNotIn(leak, page)
+        self.assertIn("JS evaluation failed (details redacted)", page)
+        self.assertIn("CDP function call error (details redacted)", page)
+        self.assertIn("Page console message redacted", ops)
+        self.assertIn("message_bytes = msg.len()", ops)
+        for level in ("tracing::warn!", "tracing::error!", "tracing::info!"):
+            with self.subTest(level=level):
+                self.assertNotIn(f'{level}(target: "obscura::console", "{{}}", msg)', ops)
+        # The CDP and in-memory console pathways remain untouched.
+        self.assertIn('push_back(format!("[{level}] {msg}"))', ops)
+        self.assertIn("if !page.runtime_events_enabled", ops)
+
     def test_js_resource_logs_omit_unmasked_url_fields(self):
         ops = source("crates/obscura-js/src/ops.rs")
         runtime = source("crates/obscura-js/src/runtime.rs")

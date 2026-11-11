@@ -72,21 +72,6 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-/// Truncate `s` to at most `max` bytes without splitting a UTF-8 character.
-/// `&s[..max]` panics if `max` lands inside a multi-byte char; the evaluated
-/// expression logged below is caller-controlled, so slice it safely.
-/// (`str::floor_char_boundary` would do this but is still unstable.)
-fn truncate_on_char_boundary(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    let mut end = max;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
 #[cfg(feature = "render")]
 fn remaining_settle_resource_warmup_ms(
     max_ms: u64,
@@ -4512,12 +4497,10 @@ impl Page {
         if let Some(js) = &mut self.js {
             match js.evaluate_with_timeout(expression, timeout) {
                 Ok(val) => val,
-                Err(e) => {
-                    tracing::debug!(
-                        "JS eval error/timeout for '{}': {}",
-                        truncate_on_char_boundary(expression, 80),
-                        e
-                    );
+                Err(_) => {
+                    // Expressions and exception messages can contain user
+                    // secrets. Do not write either to a server log.
+                    tracing::debug!("JS evaluation failed or timed out (details redacted)");
                     serde_json::Value::Null
                 }
             }
@@ -4535,12 +4518,8 @@ impl Page {
         if let Some(js) = &mut self.js {
             match js.evaluate(expression) {
                 Ok(val) => val,
-                Err(e) => {
-                    tracing::debug!(
-                        "JS eval error for '{}': {}",
-                        truncate_on_char_boundary(expression, 80),
-                        e
-                    );
+                Err(_) => {
+                    tracing::debug!("JS evaluation failed (details redacted)");
                     serde_json::Value::Null
                 }
             }
@@ -4568,8 +4547,10 @@ impl Page {
                 .await
             {
                 Ok(info) => info,
-                Err(e) => {
-                    tracing::debug!("evaluate_for_cdp error: {}", e);
+                Err(_e) => {
+                    // Preserve the CDP API response while minimizing
+                    // server-side logs of untrusted JS exception content.
+                    tracing::debug!("CDP evaluation error (details redacted)");
                     obscura_js::runtime::RemoteObjectInfo {
                         thrown: false,
                         unserializable_value: None,
@@ -4653,8 +4634,8 @@ impl Page {
                 .await
             {
                 Ok(info) => info,
-                Err(e) => {
-                    tracing::debug!("callFunctionOn error: {}", e);
+                Err(_e) => {
+                    tracing::debug!("CDP function call error (details redacted)");
                     obscura_js::runtime::RemoteObjectInfo {
                         thrown: false,
                         unserializable_value: None,
@@ -5248,7 +5229,7 @@ mod tests {
         navigation_chain_limit_from_env_value, navigation_referrer,
         navigation_timeout_from_env_value, parse_import_url, rebase_css_urls,
         register_linked_stylesheet_script, script_response_is_executable, split_css_imports,
-        stylesheet_graph_is_origin_clean, truncate_on_char_boundary, url_matches_cdp_pattern,
+        stylesheet_graph_is_origin_clean, url_matches_cdp_pattern,
         LoadedStylesheet, PendingFrameWork, StylesheetImport, DEFAULT_NAVIGATION_CHAIN_LIMIT,
         Page, BrowserContext, LifecycleState, BASE64,
     };
@@ -11111,18 +11092,6 @@ mod tests {
             page.js.as_ref().expect("runtime").scroll_offset(),
             (0.0, 80.0)
         );
-    }
-
-    #[test]
-    fn truncate_never_splits_a_multibyte_char() {
-        // A caller-supplied expression whose byte 80 lands inside a multi-byte
-        // char would make `&expression[..80]` panic; the helper truncates safely.
-        let s = format!("{}€tail", "a".repeat(79));
-        assert!(!s.is_char_boundary(80), "setup: byte 80 splits the € char");
-        let t = truncate_on_char_boundary(&s, 80);
-        assert!(s.starts_with(t));
-        assert_eq!(t.len(), 79, "should stop right before the € char");
-        assert_eq!(truncate_on_char_boundary("short", 80), "short");
     }
 
     #[test]
